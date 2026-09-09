@@ -1,0 +1,175 @@
+"""Armazenamento local (SQLite) do assistente pessoal.
+
+Guarda:
+  - histórico de conversas com o assistente
+  - ordem de prioridade personalizada das atividades (organizada por prioridade)
+  - anotações/observações feitas pelo usuário em cada atividade
+
+Usa Python puro (módulo `sqlite3`), sem dependências externas.
+"""
+
+import sqlite3
+import threading
+from datetime import datetime
+
+from paths import executavel_dir
+
+BASE_DIR = executavel_dir()
+DB_FILE = BASE_DIR / "assistente_local.db"
+
+_LOCK = threading.Lock()
+
+_SCHEMA = """
+CREATE TABLE IF NOT EXISTS conversas (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    contexto TEXT NOT NULL DEFAULT 'geral',
+    autor TEXT NOT NULL,
+    conteudo TEXT NOT NULL,
+    criado_em TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS prioridades (
+    issue_id INTEGER PRIMARY KEY,
+    prioridade INTEGER NOT NULL DEFAULT 100,
+    nota TEXT NOT NULL DEFAULT '',
+    atualizado_em TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS notas (
+    issue_id INTEGER PRIMARY KEY,
+    nota TEXT NOT NULL DEFAULT '',
+    atualizado_em TEXT NOT NULL
+);
+"""
+
+
+def _conectar() -> sqlite3.Connection:
+    con = sqlite3.connect(DB_FILE)
+    con.row_factory = sqlite3.Row
+    return con
+
+
+def _agora() -> str:
+    return datetime.now().isoformat(timespec="seconds")
+
+
+def inicializar():
+    with _LOCK:
+        con = _conectar()
+        try:
+            con.executescript(_SCHEMA)
+            con.commit()
+        finally:
+            con.close()
+
+
+inicializar()
+
+
+# ---------------------------------------------------------------- conversas
+def salvar_mensagem(autor: str, conteudo: str, contexto: str = "geral") -> None:
+    with _LOCK:
+        con = _conectar()
+        try:
+            con.execute(
+                "INSERT INTO conversas (contexto, autor, conteudo, criado_em) VALUES (?,?,?,?)",
+                (contexto, autor, conteudo, _agora()),
+            )
+            con.commit()
+        finally:
+            con.close()
+
+
+def historico(contexto: str = "geral", limite: int = 50) -> list[dict]:
+    with _LOCK:
+        con = _conectar()
+        try:
+            linhas = con.execute(
+                "SELECT autor, conteudo, criado_em FROM conversas "
+                "WHERE contexto=? ORDER BY id DESC LIMIT ?",
+                (contexto, limite),
+            ).fetchall()
+            return [dict(r) for r in reversed(linhas)]
+        finally:
+            con.close()
+
+
+def limpar_historico(contexto: str = "geral") -> int:
+    with _LOCK:
+        con = _conectar()
+        try:
+            cur = con.execute("DELETE FROM conversas WHERE contexto=?", (contexto,))
+            con.commit()
+            return cur.rowcount
+        finally:
+            con.close()
+
+
+# ---------------------------------------------------------------- prioridades
+def salvar_prioridade(issue_id: int, prioridade: int, nota: str = "") -> None:
+    with _LOCK:
+        con = _conectar()
+        try:
+            con.execute(
+                "INSERT INTO prioridades (issue_id, prioridade, nota, atualizado_em) "
+                "VALUES (?,?,?,?) "
+                "ON CONFLICT(issue_id) DO UPDATE SET prioridade=excluded.prioridade, "
+                "nota=excluded.nota, atualizado_em=excluded.atualizado_em",
+                (issue_id, int(prioridade), nota or "", _agora()),
+            )
+            con.commit()
+        finally:
+            con.close()
+
+
+def definir_prioridade_ordem(issue_ids: list[int], nota: str = "") -> None:
+    """Define a ordem de prioridade a partir de uma lista ordenada (primeiro = mais prioritário)."""
+    for posicao, iid in enumerate(issue_ids):
+        salvar_prioridade(iid, posicao, nota)
+
+
+def prioridades() -> dict[int, dict]:
+    with _LOCK:
+        con = _conectar()
+        try:
+            linhas = con.execute(
+                "SELECT issue_id, prioridade, nota, atualizado_em FROM prioridades ORDER BY prioridade ASC"
+            ).fetchall()
+            return {r["issue_id"]: dict(r) for r in linhas}
+        finally:
+            con.close()
+
+
+def limpar_prioridades() -> None:
+    with _LOCK:
+        con = _conectar()
+        try:
+            con.execute("DELETE FROM prioridades")
+            con.commit()
+        finally:
+            con.close()
+
+
+# ---------------------------------------------------------------- notas
+def salvar_nota(issue_id: int, nota: str) -> None:
+    with _LOCK:
+        con = _conectar()
+        try:
+            con.execute(
+                "INSERT INTO notas (issue_id, nota, atualizado_em) VALUES (?,?,?) "
+                "ON CONFLICT(issue_id) DO UPDATE SET nota=excluded.nota, atualizado_em=excluded.atualizado_em",
+                (issue_id, nota, _agora()),
+            )
+            con.commit()
+        finally:
+            con.close()
+
+
+def notas() -> dict[int, str]:
+    with _LOCK:
+        con = _conectar()
+        try:
+            linhas = con.execute("SELECT issue_id, nota FROM notas").fetchall()
+            return {r["issue_id"]: r["nota"] for r in linhas}
+        finally:
+            con.close()

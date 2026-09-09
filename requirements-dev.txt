@@ -1,0 +1,4 @@
+# Dependências de build e operação (instalar após o requirements.txt)
+pyinstaller==6.22.2
+# Instalação de tema no servidor (script tarefa_64402/instalar_tema.py)
+paramiko==5.0.0
