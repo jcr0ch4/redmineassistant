@@ -17,7 +17,7 @@ global nem de venvs de outros projetos.
 ### Linux
 
 ```bash
-cd "38-Redmine Assitant"
+cd "redmineassistant"
 python3 -m venv .venv
 ./.venv/bin/pip install --upgrade pip
 ./.venv/bin/pip install -r requirements.txt
@@ -26,7 +26,7 @@ python3 -m venv .venv
 ### Windows
 
 ```bat
-cd "38-Redmine Assitant"
+cd "redmineassistant"
 py -3 -m venv .venv
 .venv\Scripts\pip install --upgrade pip
 .venv\Scripts\pip install -r requirements.txt

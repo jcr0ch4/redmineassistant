@@ -37,7 +37,6 @@ Assistente pessoal do Redmine integrado a uma IA local (Ollama). Interface respo
 - `download_atividades.py` — gera planilha `atividades_ativas.xlsx`.
 - `atualizar_redmine.py` — aplica alterações da planilha no Redmine (simulação ou `--aplicar`).
 - `credenciais.txt` — (não versionar) credenciais usadas pelos scripts standalone.
-- `melhorias.txt` — anotações de melhorias.
 - `DEVELOP.md` — guia de desenvolvimento e compilação (Windows e Linux).
 
 ## Pré-requisitos
@@ -125,7 +124,3 @@ Detalhes, opções e a alternativa `flet build` (installer/bundle) estão em
 - Não versione `credenciais.txt` nem `config.json` com credenciais reais.
 - O arquivo `assistente_local.db` (SQLite) guarda histórico de conversas e prioridades localmente — não é enviado para a nuvem.
 - Recomendação: usar variáveis de ambiente ou cofre de credenciais em produção.
-
-## Melhorias planejadas
-
-Ver `melhorias.txt` para lista de melhorias (paginação, design responsivo, IA como gerente ágil, etc.).

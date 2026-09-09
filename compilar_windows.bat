@@ -3,7 +3,7 @@ setlocal EnableExtensions EnableDelayedExpansion
 cd /d "%~dp0"
 
 rem ================================================================
-rem  compilar_windows.bat - build RedmineAssistant.exe (Windows)
+rem  compilar_windows.bat - build RedmineAssitant.exe (Windows)
 rem
 rem  Usage:
 rem     compilar_windows.bat                 (Flet default icon)
@@ -11,7 +11,7 @@ rem     compilar_windows.bat logo.ico        (custom icon)
 rem     compilar_windows.bat logo.ico debug  (console build for logs)
 rem
 rem  Requires: Python 3.10-3.12 x64 (via PATH or "py" launcher).
-rem  Output: dist\RedmineAssistant.exe (one-file, no console).
+rem  Output: dist\RedmineAssitant.exe (one-file, no console).
 rem
 rem  The Flet desktop client ships in "flet-runtime\flet-windows.zip"
 rem  and is seeded into the local cache on first run - no GitHub
@@ -89,12 +89,12 @@ echo [4/5] Syntax sanity check (py_compile) ...
 if errorlevel 1 goto :erro
 
 echo [5/5] Building executable with flet pack ...
-".venv\Scripts\flet.exe" pack app_flet.py -n RedmineAssistant %ICON% %EXTRA% -y
+".venv\Scripts\flet.exe" pack app_flet.py -n RedmineAssitant %ICON% %EXTRA% -y
 if errorlevel 1 goto :erro
 
 echo.
 echo ================================================================
-echo  DONE: dist\RedmineAssistant.exe
+echo  DONE: dist\RedmineAssitant.exe
 echo.
 echo  Test: copy the exe to a clean folder and run it.
 echo  On first run the app creates config.json and assistente_local.db
