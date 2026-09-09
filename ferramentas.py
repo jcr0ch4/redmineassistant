@@ -12,6 +12,10 @@ Estrutura de cada ferramenta:
   categoria: "Redmine" (faz chamadas na API) ou "Local" (banco local SQLite)
   formato: exemplo de JSON que a IA deve retornar em format_actions
   requer_redmine: se precisa de conexão com o Redmine
+  requer_confirmacao: se o app deve pedir confirmação do usuário antes de
+    executar. True para ações que GRAVAM dado real no Redmine (proteção contra
+    prompt injection em descrições de issues); False para ações locais
+    (reversíveis) e para leitura pura (listar_atividades não altera nada).
 """
 
 
@@ -23,9 +27,12 @@ TOOLS = [
         "descricao": "Registra apontamento de horas trabalhadas em uma atividade (time entry) no Redmine.",
         "categoria": "Redmine",
         "requer_redmine": True,
+        "requer_confirmacao": True,
         "formato": (
             '{"acao": "lancar_horas", "dados": {"issue_id": <int>, "horas": <float>, '
-            '"comentario": "<string>", "data": "<AAAA-MM-DD>"}} /* data opcional, default hoje */'
+            '"comentario": "<string>", "data": "<AAAA-MM-DD>", '
+            '"atividade": "<opcional, nome da atividade de apontamento>"}} '
+            '/* data opcional, default hoje; atividade opcional, default = atividade padrão do Redmine */'
         ),
     },
     {
@@ -34,6 +41,7 @@ TOOLS = [
         "descricao": "Muda o status de uma atividade (ex.: Nova, Em andamento, Encerrada).",
         "categoria": "Redmine",
         "requer_redmine": True,
+        "requer_confirmacao": True,
         "formato": (
             '{"acao": "atualizar_status", "dados": {"issue_id": <int>, "status": "<nome do status>"}}'
         ),
@@ -44,6 +52,7 @@ TOOLS = [
         "descricao": "Define o percentual concluído de uma atividade (0 a 100).",
         "categoria": "Redmine",
         "requer_redmine": True,
+        "requer_confirmacao": True,
         "formato": (
             '{"acao": "atualizar_percentual", "dados": {"issue_id": <int>, "percentual": <int 0-100>}}'
         ),
@@ -54,6 +63,7 @@ TOOLS = [
         "descricao": "Altera a data prevista (due date) de uma atividade (AAAA-MM-DD).",
         "categoria": "Redmine",
         "requer_redmine": True,
+        "requer_confirmacao": True,
         "formato": (
             '{"acao": "atualizar_previsao", "dados": {"issue_id": <int>, "data": "<AAAA-MM-DD>"}}'
         ),
@@ -64,6 +74,7 @@ TOOLS = [
         "descricao": "Altera a prioridade da atividade no Redmine (ex.: Baixa, Normal, Alta, Urgente).",
         "categoria": "Redmine",
         "requer_redmine": True,
+        "requer_confirmacao": True,
         "formato": (
             '{"acao": "atualizar_prioridade", "dados": {"issue_id": <int>, "prioridade": "<nome>"}}'
         ),
@@ -74,6 +85,7 @@ TOOLS = [
         "descricao": "Adiciona um comentário/nota na atividade no Redmine.",
         "categoria": "Redmine",
         "requer_redmine": True,
+        "requer_confirmacao": True,
         "formato": (
             '{"acao": "adicionar_comentario", "dados": {"issue_id": <int>, "comentario": "<texto>"}}'
         ),
@@ -84,6 +96,7 @@ TOOLS = [
         "descricao": "Organiza a lista de atividades por importância em ordem personalizada (armazenada localmente).",
         "categoria": "Local",
         "requer_redmine": False,
+        "requer_confirmacao": False,
         "formato": (
             '{"acao": "definir_prioridade", "dados": {"issue_ids": [<int>, ...], '
             '"nota": "<justificativa curta>"}} /* primeiro é o mais importante */'
@@ -95,6 +108,7 @@ TOOLS = [
         "descricao": "Guarda uma anotação pessoal sobre uma atividade (armazenada localmente).",
         "categoria": "Local",
         "requer_redmine": False,
+        "requer_confirmacao": False,
         "formato": (
             '{"acao": "salvar_nota", "dados": {"issue_id": <int>, "nota": "<texto>"}}'
         ),
@@ -105,6 +119,7 @@ TOOLS = [
         "descricao": "Busca atividades no Redmine por status, prioridade ou palavra-chave no assunto.",
         "categoria": "Redmine",
         "requer_redmine": True,
+        "requer_confirmacao": False,  # leitura (GET) — não grava nada no Redmine
         "formato": (
             '{"acao": "listar_atividades", "dados": {"status": "<opcional>", '
             '"prioridade": "<opcional>", "termo": "<opcional>"}}'
@@ -143,3 +158,9 @@ def descricao_habilitadas(habitadas: list[str]) -> str:
     if not selecionadas:
         return ""
     return "\n".join(f"- {t['id']}: {t['descricao']}" for t in selecionadas)
+
+
+def requer_confirmacao(acao: str) -> bool:
+    """Diz se uma ação precisa de confirmação do usuário antes de ser executada."""
+    tool = TOOLS_POR_ID.get(acao or "")
+    return bool(tool and tool.get("requer_confirmacao", False))

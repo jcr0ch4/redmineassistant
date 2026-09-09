@@ -15,14 +15,12 @@ Uso:
 """
 
 import argparse
-import re
-from datetime import date
 from pathlib import Path
 
 from openpyxl import load_workbook
 
-from redmine_api import RedmineAPI
-from config_manager import carregar_config
+from logger_app import get_logger
+from redmine_api import RedmineAPI, criar_api_da_config, normalizar_data
 
 BASE_DIR = Path(__file__).resolve().parent
 ARQUIVO_PLANILHA = BASE_DIR / "atividades_ativas.xlsx"
@@ -108,6 +106,8 @@ def _criar_api():
 def main(aplicar: bool, planilha: Path = ARQUIVO_PLANILHA):
     api = _criar_api()
     linhas = ler_planilha(planilha)
+    # % concluído: só é enviado se habilitado nas Configurações do app
+    permitir_pct = bool(carregar_config().get("atualizar_percentual", False))
 
     print(f"{'APLICANDO' if aplicar else 'SIMULAÇÃO'} - {len(linhas)} atividades na planilha")
     print("-" * 70)
@@ -149,7 +149,13 @@ def main(aplicar: bool, planilha: Path = ARQUIVO_PLANILHA):
         if novo_status and novo_status != status_atual:
             payload["status_id"] = api.get_status_ids().get(novo_status)
             print(f"  #{issue_id}: status {status_atual} -> {novo_status}")
-        if novo_done is not None and novo_done != int(done_atual):
+        # % concluído: só envia se permitido nas Configurações E junto com mudança de status
+        if (
+            novo_done is not None
+            and novo_done != int(done_atual)
+            and permitir_pct
+            and "status_id" in payload
+        ):
             payload["done_ratio"] = novo_done
             print(f"  #{issue_id}: % {done_atual} -> {novo_done}")
 

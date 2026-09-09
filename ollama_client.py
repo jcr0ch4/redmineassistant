@@ -22,6 +22,8 @@ from datetime import date
 
 import requests
 
+import debug_log
+
 MODELO_PADRAO = "llama3.1:latest"
 OLLAMA_URL = "http://localhost:11434/api/chat"
 
@@ -48,7 +50,7 @@ PROVIDERS = {
     "gemini": {
         "label": "Gemini (Google)",
         "default_url": "https://generativelanguage.googleapis.com/v1beta/models",
-        "default_model": "gemini-1.5-flash",
+        "default_model": "gemini-2.0-flash",
         "multi_model": True,
     },
     "kimi": {
@@ -308,6 +310,9 @@ class OllamaClient:
         dados.setdefault("status", status)
         dados.setdefault("previsao", None)
         dados.setdefault("comentario", "")
+        debug_log.log("ia_sugestao", provider=self.provider, modelo=self.modelo,
+                      url=self.base_url, issue_id=issue.get("id"),
+                      assunto=assunto, resposta_raw=texto, dados=dados)
         return dados
 
     def chat(self, mensagem: str, historico: list[dict] | None = None, system: str | None = None) -> str:
@@ -428,11 +433,15 @@ em texto normal na conversa."""
 
         texto = self._enviar(messages, timeout=240)
         if not texto.strip():
+            debug_log.log("ia_assistente", provider=self.provider, modelo=self.modelo,
+                          url=self.base_url, mensagem=mensagem, resposta_raw="", acoes=[])
             return {"resposta": "", "acoes": []}
 
         try:
             dados = self._extrair_json(texto)
         except Exception:
+            debug_log.log("ia_assistente", provider=self.provider, modelo=self.modelo,
+                          url=self.base_url, mensagem=mensagem, resposta_raw=texto, acoes=[])
             return {"resposta": texto, "acoes": [], "raw": texto}
 
         resposta = str(dados.get("resposta") or dados.get("response") or texto)
@@ -441,6 +450,9 @@ em texto normal na conversa."""
             acoes = []
         if ferramentas:
             acoes = [a for a in acoes if isinstance(a, dict) and (a.get("acao") or a.get("tipo")) in ferramentas]
+        debug_log.log("ia_assistente", provider=self.provider, modelo=self.modelo,
+                      url=self.base_url, mensagem=mensagem, resposta=resposta,
+                      acoes=acoes, resposta_raw=texto)
         return {"resposta": resposta, "acoes": acoes, "raw": texto}
 
 

@@ -10,6 +10,7 @@ Usa Python puro (módulo `sqlite3`), sem dependências externas.
 
 import sqlite3
 import threading
+import uuid
 from datetime import datetime
 
 from paths import executavel_dir
@@ -26,6 +27,13 @@ CREATE TABLE IF NOT EXISTS conversas (
     autor TEXT NOT NULL,
     conteudo TEXT NOT NULL,
     criado_em TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS conversacoes (
+    contexto TEXT PRIMARY KEY,
+    titulo TEXT NOT NULL,
+    criado_em TEXT NOT NULL,
+    atualizado_em TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS prioridades (
@@ -63,7 +71,95 @@ def inicializar():
             con.close()
 
 
+def _garantir_conversa_inicial():
+    """Garante ao menos uma conversa na tabela conversacoes.
+
+    Migra o histórico legado gravado sob o contexto 'geral' (antes do suporte
+    a múltiplas conversas), usando como título a primeira mensagem do usuário.
+    """
+    with _LOCK:
+        con = _conectar()
+        try:
+            qtde = con.execute("SELECT COUNT(*) FROM conversacoes").fetchone()[0]
+            if qtde > 0:
+                return
+            titulo = "Conversa"
+            primeira = con.execute(
+                "SELECT conteudo FROM conversas WHERE contexto='geral' AND autor='você' "
+                "ORDER BY id ASC LIMIT 1"
+            ).fetchone()
+            if primeira:
+                titulo = " ".join(primeira["conteudo"].strip().split())[:40]
+            con.execute(
+                "INSERT OR IGNORE INTO conversacoes (contexto, titulo, criado_em, atualizado_em) "
+                "VALUES ('geral', ?, ?, ?)",
+                (titulo, _agora(), _agora()),
+            )
+            con.commit()
+        finally:
+            con.close()
+
+
 inicializar()
+_garantir_conversa_inicial()
+
+
+# ---------------------------------------------------------------- conversas (múltiplas)
+def listar_conversas() -> list[dict]:
+    """Lista as conversas por atividade recente, com título e nº de mensagens."""
+    with _LOCK:
+        con = _conectar()
+        try:
+            linhas = con.execute(
+                "SELECT c.contexto, c.titulo, c.criado_em, c.atualizado_em, "
+                "(SELECT COUNT(*) FROM conversas m WHERE m.contexto = c.contexto) AS mensagens "
+                "FROM conversacoes c ORDER BY c.atualizado_em DESC"
+            ).fetchall()
+            return [dict(r) for r in linhas]
+        finally:
+            con.close()
+
+
+def criar_conversa(contexto: str | None = None, titulo: str = "Nova conversa") -> str:
+    """Cria uma conversa e retorna seu contexto (chave)."""
+    if not contexto:
+        contexto = f"c-{uuid.uuid4().hex[:8]}"
+    with _LOCK:
+        con = _conectar()
+        try:
+            con.execute(
+                "INSERT OR IGNORE INTO conversacoes (contexto, titulo, criado_em, atualizado_em) "
+                "VALUES (?, ?, ?, ?)",
+                (contexto, titulo, _agora(), _agora()),
+            )
+            con.commit()
+            return contexto
+        finally:
+            con.close()
+
+
+def renomear_conversa(contexto: str, titulo: str) -> None:
+    with _LOCK:
+        con = _conectar()
+        try:
+            con.execute(
+                "UPDATE conversacoes SET titulo=?, atualizado_em=? WHERE contexto=?",
+                (titulo, _agora(), contexto),
+            )
+            con.commit()
+        finally:
+            con.close()
+
+
+def excluir_conversa(contexto: str) -> None:
+    with _LOCK:
+        con = _conectar()
+        try:
+            con.execute("DELETE FROM conversas WHERE contexto=?", (contexto,))
+            con.execute("DELETE FROM conversacoes WHERE contexto=?", (contexto,))
+            con.commit()
+        finally:
+            con.close()
 
 
 # ---------------------------------------------------------------- conversas
@@ -75,6 +171,21 @@ def salvar_mensagem(autor: str, conteudo: str, contexto: str = "geral") -> None:
                 "INSERT INTO conversas (contexto, autor, conteudo, criado_em) VALUES (?,?,?,?)",
                 (contexto, autor, conteudo, _agora()),
             )
+            criado = _agora()
+            con.execute(
+                "UPDATE conversacoes SET atualizado_em=? WHERE contexto=?",
+                (criado, contexto),
+            )
+            if autor == "você":
+                contagem = con.execute(
+                    "SELECT COUNT(*) FROM conversas WHERE contexto=?", (contexto,)
+                ).fetchone()[0]
+                if contagem == 1:
+                    titulo = " ".join(conteudo.strip().split())[:40]
+                    con.execute(
+                        "UPDATE conversacoes SET titulo=? WHERE contexto=?",
+                        (titulo, contexto),
+                    )
             con.commit()
         finally:
             con.close()

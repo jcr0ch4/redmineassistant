@@ -14,18 +14,24 @@ ou:
 
 import asyncio
 import platform
+from collections import Counter
 from datetime import date
 
 import flet as ft
 
 import assistente_db as adb
-from config_manager import carregar_config, salvar_config
-from ferramentas import TOOLS, TOOLS_POR_ID, categorias, ferramentas_por_categoria
+import debug_log
+from acoes import ExecutorDeAcoes
+from config_manager import DEFAULT_KANBAN_COLUNAS, carregar_config, salvar_config
+from ferramentas import TOOLS, TOOLS_POR_ID, categorias, ferramentas_por_categoria, requer_confirmacao
 from ollama_client import PROVIDERS, OllamaClient
-from redmine_api import STATUS_ATIVOS, RedmineAPI
+from redmine_api import STATUS_ATIVOS, RedmineAPI, criar_api
 
 STATUS_VALIDOS = ["Nova", "Backlog", "Especificação", "Em andamento", "Validação", "Encerrada", "Cancelada", "Suspensa"]
 ITENS_POR_PAGINA = 6
+
+# Cor de destaque principal do app (mesma do cesta-wbv)
+COR_PRINCIPAL = ft.Colors.INDIGO_700
 
 CORES_STATUS = {
     "Nova": ft.Colors.RED_200,
@@ -35,10 +41,48 @@ CORES_STATUS = {
 }
 
 
+class _EditorColuna:
+    """Widget do editor de uma coluna do quadro kanban (tela de Configurações)."""
+
+    def __init__(self, titulo: str | None, statuses: list | None, concluida: bool):
+        self.txt_titulo = ft.TextField(value=titulo or "", hint_text="Nome da coluna", dense=True, expand=True)
+        self.lbl_status = ft.Text("Status incluídos nesta coluna:", size=11, color=ft.Colors.GREY)
+        self._status_selecionados = set(statuses or [])
+        self.chips: list[ft.Chip] = []
+        for st in STATUS_VALIDOS:
+            chip = ft.Chip(
+                label=ft.Text(st, size=11),
+                selected=st in self._status_selecionados,
+                selected_color=ft.Colors.INDIGO_100,
+                on_select=lambda e, s=st: self._alternar_status(s, e),
+            )
+            self.chips.append(chip)
+        self.wrap_status = ft.Row(self.chips, wrap=True, spacing=4, run_spacing=4)
+        self.chk_concluida = ft.Checkbox(
+            label="Coluna de concluídas (atividades da sprint)",
+            tooltip="Lista as atividades já fechadas na sprint selecionada no quadro. Marque os status fechados (ex.: Encerrada, Cancelada).",
+            value=bool(concluida),
+        )
+
+    def _alternar_status(self, status: str, e):
+        if e.control.selected:
+            self._status_selecionados.add(status)
+        else:
+            self._status_selecionados.discard(status)
+
+    def to_dict(self) -> dict:
+        return {
+            "titulo": self.txt_titulo.value.strip() or ", ".join(sorted(self._status_selecionados)) or "Coluna",
+            "status": sorted(self._status_selecionados),
+            "concluida": bool(self.chk_concluida.value),
+        }
+
+
 class App:
     def __init__(self, page: ft.Page):
         self.page = page
         self.config = carregar_config()
+        debug_log.habilitar(self.config.get("debug", False))
         self.ollama = self._construir_cliente_llm()
 
         self.issues = []
@@ -50,6 +94,9 @@ class App:
         self.versoes_projeto = []
         self.hoje = date.today().isoformat()
         self.api = None
+        self.conv_atual = None
+        self.issues_concluidas = []
+        self.sprint_atual_id = None
 
         # Indicador de "digitando" (3 pontos animados) do assistente
         self.asst_digitando_col = None
@@ -61,6 +108,9 @@ class App:
         self.navbar = ft.NavigationBar(
             selected_index=0,
             bgcolor=ft.Colors.SURFACE,
+            height=56,
+            label_behavior=ft.NavigationBarLabelBehavior.ALWAYS_SHOW,
+            label_padding=ft.Padding(0, 2, 0, 4),
             destinations=[
                 ft.NavigationBarDestination(icon=ft.Icons.LIST_ALT, label="Atividades"),
                 ft.NavigationBarDestination(icon=ft.Icons.SMART_TOY, label="Assistente"),
@@ -78,33 +128,31 @@ class App:
         self.page.padding = 0
         self.page.spacing = 0
 
-        # ---- Tema Material 3 (estilo Android) ----
+        # ---- Tema Material 3 (estilo Android) — mesmo tema/estilo do app cesta-wbv:
+        # seed INDI_700, modo claro, fundo padrão, densidade confortável. ----
         self.page.theme_mode = ft.ThemeMode.LIGHT
         self.page.theme = ft.Theme(
-            color_scheme_seed=ft.Colors.INDIGO,
+            color_scheme_seed=COR_PRINCIPAL,
             visual_density=ft.VisualDensity.COMFORTABLE,
-            scaffold_bgcolor=ft.Colors.SURFACE_CONTAINER_LOW,
-            color_scheme=ft.ColorScheme(
-                primary=ft.Colors.INDIGO,
-                on_primary=ft.Colors.WHITE,
-                primary_container=ft.Colors.INDIGO_100,
-                on_primary_container=ft.Colors.INDIGO_900,
-                secondary=ft.Colors.TEAL,
-                secondary_container=ft.Colors.TEAL_100,
-                on_secondary_container=ft.Colors.TEAL_900,
-                surface=ft.Colors.WHITE,
-                surface_container_low=ft.Colors.GREY_100,
-                surface_container_highest=ft.Colors.GREY_200,
+            navigation_bar_theme=ft.NavigationBarTheme(
+                label_text_style=ft.TextStyle(
+                    color=ft.Colors.GREY_800,
+                    weight=ft.FontWeight.W_500,
+                ),
+                indicator_color=ft.Colors.INDIGO_100,
             ),
         )
 
         self.navbar.bgcolor = ft.Colors.SURFACE
         self.navbar.indicator_color = ft.Colors.INDIGO_100
+        self.page.on_resize = self._on_resize
         self.page.add(self.conteudo, self.navbar)
 
     async def _inicializar(self):
         await asyncio.to_thread(self._construir_views)
         self._renderizar_abate(0)
+        self._inicializar_conversa()
+        self._render_conversas()
         self._carregar_historico_assistente()
         if self.config.get("api_key"):
             await self._carregar_async()
@@ -115,31 +163,104 @@ class App:
             label="Buscar (ID ou assunto)",
             prefix_icon=ft.Icons.SEARCH,
             on_change=self._filtrar,
-            border_radius=12,
+            border_radius=10,
+            bgcolor=ft.Colors.SURFACE,
+            height=40,
+            expand=True,
         )
-        self.lista = ft.Column(spacing=8, expand=True)
+        self.lista = ft.Column(spacing=8, expand=True, scroll=ft.ScrollMode.AUTO)
         self.lbl_carregando = ft.Text("", size=12, color=ft.Colors.GREY)
-        self.lbl_usuario = ft.Text("", size=12, weight=ft.FontWeight.BOLD)
+        self.lbl_usuario = ft.Text("", size=13, weight=ft.FontWeight.BOLD, color=ft.Colors.WHITE)
         self.row_paginacao = ft.Row([], alignment=ft.MainAxisAlignment.CENTER, spacing=8)
 
-        self.view_atividades = ft.ListView(
-            [
-                ft.Container(
-                    ft.Column(
-                        [
-                            ft.Row([self.lbl_usuario, ft.Container(expand=True), self.btn_atualizar()], spacing=8),
-                            self.busca,
-                            self.lbl_carregando,
-                            self.lista,
-                            self.row_paginacao,
-                        ],
-                        spacing=8,
-                    ),
-                    padding=12,
-                )
+        # ---- toggle Lista / Kanban ----
+        self.seg_visualizacao = ft.SegmentedButton(
+            show_selected_icon=False,
+            allow_empty_selection=False,
+            allow_multiple_selection=False,
+            selected=[self.config.get("visualizacao") if self.config.get("visualizacao") in ("lista", "kanban") else "lista"],
+            style=ft.ButtonStyle(
+                color={
+                    ft.ControlState.SELECTED: ft.Colors.WHITE,
+                    ft.ControlState.DEFAULT: ft.Colors.GREY_800,
+                },
+                bgcolor={
+                    ft.ControlState.SELECTED: ft.Colors.GREEN_600,
+                    ft.ControlState.DEFAULT: ft.Colors.SURFACE,
+                },
+            ),
+            segments=[
+                ft.Segment(value="lista", label=ft.Text("Lista")),
+                ft.Segment(value="kanban", label=ft.Text("Kanban")),
             ],
-            expand=True,
+            on_change=self._trocar_visualizacao,
+        )
+
+        # ---- conteúdo kanban ----
+        self.kanban_sprint = ft.Dropdown(label="Sprint", width=190, height=40, on_select=self._kanban_sprint_alterada)
+        self.kanban_lbl_status = ft.Text("", size=11, color=ft.Colors.GREY)
+        self.encaixe_kanban_sprint = ft.Container(
+            self.kanban_sprint,
+            bgcolor=ft.Colors.SURFACE,
+            border_radius=12,
+            visible=("kanban" in (self.seg_visualizacao.selected or [])),
+        )
+        self.kanban_colunas = ft.Row(spacing=10, scroll=ft.ScrollMode.AUTO, expand=True, vertical_alignment=ft.CrossAxisAlignment.STRETCH)
+        self.corpo_kanban = ft.Column(
+            [
+                ft.Row([self.kanban_lbl_status], spacing=8),
+                self.kanban_colunas,
+            ],
             spacing=8,
+            expand=True,
+        )
+
+        # ---- atividades: cabeçalho fixo + conteúdo alternável (lista/kanban) ----
+        self.corpo_lista = ft.Column([self.lista, self.row_paginacao], spacing=8, expand=True)
+        self.corpo_conteudo_atividades = ft.Column(expand=True, spacing=8)
+        corpo_inicial = self.corpo_kanban if "kanban" in (self.seg_visualizacao.selected or []) else self.corpo_lista
+        self.corpo_conteudo_atividades.controls.append(corpo_inicial)
+
+        # ---- appbar superior (estilo cesta-wbv), uma linha:
+        # usuário -> filtro de sprint -> busca -> Lista/Kanban -> atualizar ----
+        self.barra_superior = ft.Container(
+            content=ft.Row(
+                [
+                    ft.Icon(ft.Icons.ACCOUNT_CIRCLE_OUTLINED, size=20, color=ft.Colors.WHITE),
+                    self.lbl_usuario,
+                    self.encaixe_kanban_sprint,
+                    self.busca,
+                    self.seg_visualizacao,
+                    self.btn_atualizar(),
+                ],
+                spacing=6,
+                vertical_alignment=ft.CrossAxisAlignment.CENTER,
+            ),
+            bgcolor=COR_PRINCIPAL,
+            padding=ft.Padding(12, 6, 12, 6),
+        )
+
+        self.view_atividades = ft.Container(
+            content=ft.Column(
+                [
+                    self.barra_superior,
+                    ft.Container(
+                        ft.Column(
+                            [
+                                self.lbl_carregando,
+                                self.corpo_conteudo_atividades,
+                            ],
+                            spacing=6,
+                            expand=True,
+                        ),
+                        padding=12,
+                        expand=True,
+                    ),
+                ],
+                spacing=0,
+                expand=True,
+            ),
+            expand=True,
         )
 
         # ---------- view ASSISTENTE ----------
@@ -167,13 +288,43 @@ class App:
         self.asst_prompt_sistema = None
         self.asst_lbl_status = ft.Text("", size=11, color=ft.Colors.GREY)
 
+        # Sidebar de conversas (estilo ChatGPT)
+        self.conversas_lista = ft.Column(spacing=4, scroll=ft.ScrollMode.AUTO, expand=True)
+        self.asst_sidebar = ft.Container(
+            ft.Column(
+                [
+                    ft.Row(
+                        [
+                            ft.Text("Conversas", weight=ft.FontWeight.BOLD, size=13),
+                            ft.Container(expand=True),
+                            ft.IconButton(
+                                icon=ft.Icons.ADD_COMMENT,
+                                tooltip="Nova conversa",
+                                icon_color=ft.Colors.ON_PRIMARY,
+                                bgcolor=ft.Colors.PRIMARY,
+                                on_click=self._nova_conversa,
+                            ),
+                        ],
+                        spacing=6,
+                    ),
+                    ft.Divider(height=1),
+                    self.conversas_lista,
+                ],
+                spacing=8,
+            ),
+            width=230,
+            bgcolor=ft.Colors.SURFACE_CONTAINER_LOW,
+            border=ft.Border(right=ft.BorderSide(1, ft.Colors.OUTLINE_VARIANT)),
+            padding=ft.Padding(8, 10, 8, 10),
+        )
+
         # Barra superior FIXA (título + ícone + limpar)
         self.asst_appbar = ft.Container(
             ft.Row(
                 [
                     ft.Container(
                         ft.Icon(ft.Icons.SMART_TOY, color=ft.Colors.WHITE),
-                        bgcolor=ft.Colors.INDIGO,
+                        bgcolor=ft.Colors.INDIGO_700,
                         border_radius=12,
                         padding=ft.Padding(8, 8, 8, 8),
                     ),
@@ -217,7 +368,7 @@ class App:
                 [
                     ft.Row(
                         [
-                            ft.Icon(ft.Icons.LOW_PRIORITY, size=16, color=ft.Colors.INDIGO),
+                            ft.Icon(ft.Icons.LOW_PRIORITY, size=16, color=COR_PRINCIPAL),
                             ft.Text("Minhas atividades por prioridade", weight=ft.FontWeight.BOLD, size=13),
                         ],
                         spacing=6,
@@ -248,9 +399,26 @@ class App:
         self.view_assistente = ft.Column(
             [
                 self.asst_appbar,
-                self.asst_chat_area,
-                self.asst_prioridade_painel,
-                self.asst_rodape,
+                ft.Row(
+                    [
+                        self.asst_sidebar,
+                        ft.Container(
+                            ft.Column(
+                                [
+                                    self.asst_chat_area,
+                                    self.asst_prioridade_painel,
+                                    self.asst_rodape,
+                                ],
+                                spacing=0,
+                                expand=True,
+                            ),
+                            expand=True,
+                            padding=ft.Padding(0, 8, 0, 0),
+                        ),
+                    ],
+                    expand=True,
+                    spacing=0,
+                ),
             ],
             expand=True,
             spacing=0,
@@ -258,8 +426,6 @@ class App:
 
         # ---------- view CONFIG ----------
         self.txt_site = ft.TextField(label="URL do Redmine", hint_text="https://projetos.wheaton.com.br", value=self.config.get("site", ""))
-        self.txt_login = ft.TextField(label="Login", value=self.config.get("login", ""))
-        self.txt_senha = ft.TextField(label="Senha", password=True, can_reveal_password=True, value=self.config.get("senha", ""))
         self.txt_apikey = ft.TextField(label="API access key", value=self.config.get("api_key", ""), password=True, can_reveal_password=True)
 
         # LLM
@@ -285,6 +451,21 @@ class App:
         self.lbl_status_config = ft.Text("", size=12, color=ft.Colors.GREY)
         self.btn_salvar = ft.FilledButton("Salvar configurações", icon=ft.Icons.SAVE, on_click=self._salvar_config)
         self.btn_testar = ft.Button("Testar conexão", icon=ft.Icons.CONNECTED_TV, on_click=lambda e: self.page.run_task(self._testar_async))
+        self.chk_debug = ft.Checkbox(
+            label="Modo debug — registrar interações Redmine × IA",
+            tooltip="Gera o arquivo debug.log ao lado do aplicativo com as requisições enviadas à IA e ao Redmine.",
+            value=bool(self.config.get("debug", False)),
+        )
+        self.chk_atualizar_pct = ft.Checkbox(
+            label="Permitir atualizar % concluído no Redmine",
+            tooltip="O servidor pode ter regras que bloqueiam o ajuste manual do % concluído. Desligado, o app nunca envia o % concluído e o lançamento de horas não depende dele (o % só muda por regras do servidor / mudança de status).",
+            value=bool(self.config.get("atualizar_percentual", False)),
+        )
+        self.chk_auto_executar = ft.Checkbox(
+            label="Executar ações da IA sem confirmação (avançado)",
+            tooltip="Desligado (padrão): toda ação que grava dado no Redmine (horas, status, prioridade, comentário) é exibida para você confirmar antes de aplicar. Ligar remove essa etapa — cuidado com descrições de issues criadas por outras pessoas (risco de prompt injection).",
+            value=bool(self.config.get("assistente_auto_executar", False)),
+        )
 
         # Ferramentas do assistente (ações que a IA pode executar)
         self._chk_ferramentas: dict[str, ft.Checkbox] = {}
@@ -313,12 +494,34 @@ class App:
                         spacing=6,
                     ),
                     bgcolor=ft.Colors.SURFACE_CONTAINER_LOW,
-                    border_radius=10,
+                    border_radius=12,
                     padding=10,
                 )
             )
 
+        # Editor do quadro kanban (colunas persistidas na configuração)
+        self._editores_colunas = [
+            _EditorColuna(c.get("titulo"), c.get("status"), c.get("concluida", False))
+            for c in self._kanban_colunas_config()
+        ]
+        self.colunas_kanban_list = ft.Column(spacing=10)
+        for ed in self._editores_colunas:
+            self.colunas_kanban_list.controls.append(self._card_editor_coluna(ed))
+        self.btn_kb_adicionar = ft.OutlinedButton("Adicionar coluna", icon=ft.Icons.ADD, on_click=self._kb_adicionar)
+
         self._atualizar_campos_llm(initial=True)
+
+        def _secao(titulo: str, controles: list, dica: str | None = None) -> ft.Container:
+            itens = [ft.Text(titulo, weight=ft.FontWeight.BOLD, size=13)]
+            if dica:
+                itens.append(ft.Text(dica, size=11, color=ft.Colors.GREY))
+            itens.extend(controles)
+            return ft.Container(
+                ft.Column(itens, spacing=8),
+                padding=12,
+                border_radius=12,
+                bgcolor=ft.Colors.SURFACE_CONTAINER_LOW,
+            )
 
         self.view_config = ft.ListView(
             [
@@ -326,27 +529,58 @@ class App:
                     ft.Column(
                         [
                             ft.Text("Configurações", size=18, weight=ft.FontWeight.BOLD),
-                            ft.Text("Credenciais do Redmine", weight=ft.FontWeight.BOLD, size=13),
-                            self.txt_site,
-                            self.txt_login,
-                            self.txt_senha,
-                            self.txt_apikey,
-                            ft.Divider(height=8),
-                            ft.Text("Provedor de IA (LLM)", weight=ft.FontWeight.BOLD, size=13),
-                            self.cmb_provider,
-                            self.txt_llm_api_key,
-                            self.txt_llm_url,
-                            self.txt_llm_model,
-                            ft.Row([self.txt_llm_temp, self.txt_llm_max_tokens], spacing=8),
-                            self.txt_llm_prompt_system,
-                            ft.Divider(height=8),
-                            ft.Text("Ferramentas do assistente", weight=ft.FontWeight.BOLD, size=13),
-                            ft.Text("Selecione quais ações a IA pode executar no Redmine e localmente.", size=11, color=ft.Colors.GREY),
-                            *blocos_ferramentas,
-                            ft.Row([self.btn_testar, self.btn_salvar], spacing=10),
+                            _secao(
+                                "Redmine",
+                                [self.txt_site, self.txt_apikey],
+                                dica="Somente a API access key é usada (associada ao seu usuário no Redmine).",
+                            ),
+                            _secao(
+                                "Provedor de IA (LLM)",
+                                [
+                                    self.cmb_provider,
+                                    self.txt_llm_api_key,
+                                    self.txt_llm_url,
+                                    self.txt_llm_model,
+                                    ft.ResponsiveRow(
+                                        [
+                                            ft.Container(self.txt_llm_temp, col={"sm": 12, "md": 6}),
+                                            ft.Container(self.txt_llm_max_tokens, col={"sm": 12, "md": 6}),
+                                        ],
+                                        spacing=8,
+                                    ),
+                                    self.txt_llm_prompt_system,
+                                ],
+                            ),
+                            _secao(
+                                "Ferramentas do assistente",
+                                blocos_ferramentas,
+                                dica="Selecione quais ações a IA pode executar no Redmine e localmente.",
+                            ),
+                            _secao(
+                                "Assistente de IA",
+                                [self.chk_auto_executar],
+                                dica="Recomendado manter desmarcado: ações que gravam no Redmine passam por sua confirmação.",
+                            ),
+                            _secao(
+                                "Regras de atualização",
+                                [
+                                    self.chk_atualizar_pct,
+                                    ft.Text("Desligado, o % concluído não é alterado pelo app (lançamento de horas funciona normalmente).", size=11, color=ft.Colors.GREY),
+                                ],
+                            ),
+                            _secao(
+                                "Quadro Kanban",
+                                [
+                                    ft.Text("Monte o quadro como preferir: crie, reordene e remova colunas. Toque nas etiquetas para incluir/excluir cada status. Coluna de \"concluídas\" lista as atividades fechadas da sprint selecionada.", size=11, color=ft.Colors.GREY),
+                                    self.colunas_kanban_list,
+                                    self.btn_kb_adicionar,
+                                ],
+                            ),
+                            _secao("Depuração", [self.chk_debug]),
+                            ft.Row([self.btn_testar, self.btn_salvar], spacing=10, wrap=True),
                             self.lbl_status_config,
                         ],
-                        spacing=10,
+                        spacing=12,
                     ),
                     padding=16,
                 )
@@ -356,7 +590,12 @@ class App:
         )
 
     def btn_atualizar(self):
-        return ft.IconButton(icon=ft.Icons.REFRESH, tooltip="Atualizar lista", on_click=self._carregar_async)
+        return ft.IconButton(
+            icon=ft.Icons.REFRESH,
+            icon_color=ft.Colors.WHITE,
+            tooltip="Atualizar lista",
+            on_click=self._carregar_async,
+        )
 
     # ============================================================ abas
     def _trocar_aba(self, e):
@@ -390,17 +629,16 @@ class App:
             self.lbl_carregando.color = ft.Colors.RED
         finally:
             self._render_lista()
+            if "kanban" in (self.seg_visualizacao.selected or []):
+                self.page.run_task(self._preparar_kanban)
             self.page.update()
 
     def _carregar(self):
         if self.api is None:
-            creds = {
-                "site": self.config.get("site"),
-                "api_key": self.config.get("api_key"),
-                "login": self.config.get("login"),
-                "senha": self.config.get("senha"),
-            }
-            self.api = RedmineAPI(credenciais=creds if creds.get("site") else None)
+            self.api = criar_api(self.config)
+        if self.api is None:
+            self.api = RedmineAPI()  # fallback: credenciais.txt
+        self._status_disp = None
 
         usuario = self.api.get_usuario_atual()
         nome = " ".join(x for x in [usuario.get("firstname"), usuario.get("lastname")] if x)
@@ -417,7 +655,248 @@ class App:
                           if not termo or termo in str(i.get("id")) or termo in i.get("subject", "").lower()]
         self.pagina = 0
         self._render_lista()
+        if "kanban" in (self.seg_visualizacao.selected or []):
+            self._render_kanban()
         self.page.update()
+
+    # ============================================================ visualização kanban
+    def _persistir_config(self):
+        try:
+            salvar_config(self.config)
+        except Exception:
+            pass
+
+    def _trocar_visualizacao(self, e=None):
+        kanban = "kanban" in (self.seg_visualizacao.selected or [])
+        self.config["visualizacao"] = "kanban" if kanban else "lista"
+        self._persistir_config()
+        self.encaixe_kanban_sprint.visible = kanban
+        self.corpo_conteudo_atividades.controls.clear()
+        self.corpo_conteudo_atividades.controls.append(self.corpo_kanban if kanban else self.corpo_lista)
+        self.page.update()
+        if kanban:
+            self.page.run_task(self._preparar_kanban)
+
+    def _on_resize(self, e=None):
+        seg = getattr(self, "seg_visualizacao", None)
+        if seg and "kanban" in (seg.selected or []):
+            self._render_kanban()
+            self.page.update()
+
+    async def _preparar_kanban(self):
+        if self.api is None:
+            return
+        self.kanban_lbl_status.value = "Carregando sprints..."
+        self.kanban_lbl_status.color = ft.Colors.GREY
+        self.page.update()
+        try:
+            await asyncio.to_thread(self._montar_opcoes_sprint)
+            if self.kanban_sprint.options and (
+                self.kanban_sprint.value not in {o.key for o in self.kanban_sprint.options}
+            ):
+                self.kanban_sprint.value = self.sprint_atual_id
+            await self._carregar_concluidas_kanban()
+        except Exception as ex:
+            self.kanban_lbl_status.value = f"Erro: {type(ex).__name__}: {ex}"
+            self.kanban_lbl_status.color = ft.Colors.RED
+            self.page.update()
+
+    def _montar_opcoes_sprint(self):
+        """Popula o dropdown com as versões dos projetos das issues e autoseleciona a sprint atual."""
+        projetos = {}
+        for issue in self.issues:
+            pj = issue.get("project") or {}
+            if pj.get("id") is not None:
+                projetos[pj["id"]] = pj.get("name", "")
+
+        versoes = []
+        for pid in projetos:
+            try:
+                versoes.extend(self.api.get_versions(pid))
+            except Exception:
+                continue
+
+        hoje = str(self.hoje)
+        abertas = [v for v in versoes if str(v.get("status")) == "open"]
+
+        def _chave(v):
+            d = str(v.get("due_date") or "")
+            dentro = 0 if (d and d >= hoje) else 1
+            return (dentro, d)
+
+        abertas.sort(key=_chave)
+        self.sprint_atual_id = None
+        if abertas:
+            dentro_daqui = [v for v in abertas if str(v.get("due_date") or "") >= hoje]
+            escolhida = dentro_daqui[0] if dentro_daqui else abertas[0]
+            self.sprint_atual_id = str(escolhida.get("id"))
+
+        cont = Counter(str((i.get("fixed_version") or {}).get("id")) for i in self.issues if i.get("fixed_version"))
+        dominante = cont.most_common(1)[0][0] if cont else None
+
+        opcoes = []
+        vistos = set()
+        for v in abertas:
+            vid = str(v.get("id"))
+            if vid in vistos:
+                continue
+            vistos.add(vid)
+            texto = str(v.get("name") or "")
+            if v.get("due_date"):
+                texto += f" · {v.get('due_date')}"
+            opcoes.append(ft.DropdownOption(key=vid, text=texto))
+        if dominante and dominante not in vistos:
+            vd = next((v for v in versoes if str(v.get("id")) == dominante), None)
+            if vd:
+                texto = str(vd.get("name") or "")
+                if str(vd.get("status")) != "open":
+                    texto += " · (fechada)"
+                opcoes.append(ft.DropdownOption(key=dominante, text=texto))
+                if self.sprint_atual_id is None:
+                    self.sprint_atual_id = dominante
+
+        self.kanban_sprint.options = opcoes
+        if opcoes:
+            salvo = str(self.config.get("kanban_sprint_id") or "")
+            if salvo and salvo in {o.key for o in opcoes}:
+                self.kanban_sprint.value = salvo
+            else:
+                if self.sprint_atual_id and self.sprint_atual_id not in {o.key for o in opcoes}:
+                    self.sprint_atual_id = opcoes[0].key
+                self.kanban_sprint.value = self.sprint_atual_id or opcoes[0].key
+
+    def _kanban_sprint_alterada(self, e=None):
+        if self.kanban_sprint.value:
+            self.config["kanban_sprint_id"] = str(self.kanban_sprint.value)
+            self._persistir_config()
+        self.page.run_task(self._carregar_concluidas_kanban)
+
+    async def _carregar_concluidas_kanban(self, e=None):
+        vid = self.kanban_sprint.value
+        if not vid or self.api is None:
+            self.issues_concluidas = []
+            self._render_kanban()
+            self.page.update()
+            return
+        self.kanban_lbl_status.value = "Carregando concluídas..."
+        self.kanban_lbl_status.color = ft.Colors.GREY
+        self.page.update()
+        try:
+            self.issues_concluidas = await asyncio.to_thread(self.api.get_issues_concluidas, int(vid))
+        except Exception as ex:
+            self.issues_concluidas = []
+            self.kanban_lbl_status.value = f"Erro: {type(ex).__name__}: {ex}"
+            self.kanban_lbl_status.color = ft.Colors.RED
+            self.page.update()
+            return
+        statuses_concluida = self._statuses_colunas_concluida()
+        total = [i for i in self.issues_concluidas if (i.get("status") or {}).get("name") in statuses_concluida]
+        self.kanban_lbl_status.value = f"{len(total)} concluídas nessa sprint" if total else "Sem atividades concluídas nessa sprint"
+        self.kanban_lbl_status.color = ft.Colors.GREY
+        self._render_kanban()
+        self.page.update()
+
+    def _kanban_colunas_config(self) -> list:
+        colunas = self.config.get("kanban_colunas")
+        if not isinstance(colunas, list) or not colunas:
+            return [dict(c) for c in DEFAULT_KANBAN_COLUNAS]
+        return colunas
+
+    def _statuses_colunas_concluida(self) -> set:
+        return {
+            s for col in self._kanban_colunas_config() if col.get("concluida")
+            for s in (col.get("status") or [])
+        }
+
+    def _render_kanban(self):
+        # Responsivo: se as colunas couberem na largura da janela, distribui o
+        # espaço igualmente (com teto de 320px); senão mantém largura fixa com
+        # rolagem horizontal. Recalculado também ao redimensionar a janela.
+        self.kanban_colunas.controls.clear()
+        colunas = self._kanban_colunas_config()
+        n_colunas = max(1, len(colunas))
+        largura_util = max(240, (self.page.window.width or 430) - 24)
+        base = 230
+        if n_colunas * base <= largura_util:
+            largura_col = min(largura_util / n_colunas, 320)
+            self.kanban_colunas.scroll = ft.ScrollMode.HIDDEN
+        else:
+            largura_col = base
+            self.kanban_colunas.scroll = ft.ScrollMode.AUTO
+        for col in colunas:
+            statuses = set(col.get("status") or [])
+            concluida = bool(col.get("concluida", False))
+            titulo = str(col.get("titulo") or "—").strip() or "—"
+            if concluida:
+                itens = [i for i in self.issues_concluidas if (i.get("status") or {}).get("name") in statuses]
+            else:
+                itens = [i for i in self.filtrados if (i.get("status") or {}).get("name") in statuses]
+            prim = next(iter(statuses), "") if statuses else ""
+            cor = ft.Colors.GREEN_200 if concluida else CORES_STATUS.get(prim, ft.Colors.GREY_300)
+            self.kanban_colunas.controls.append(
+                self._coluna_kanban(titulo, itens, destaque=concluida, cor=cor, largura=largura_col)
+            )
+
+    def _coluna_kanban(self, status: str, itens: list, destaque: bool = False, cor=None, largura: float = 250):
+        cor = cor or (ft.Colors.GREEN_200 if destaque else CORES_STATUS.get(status, ft.Colors.GREY_300))
+        cards = [self._card_kanban(i) for i in itens]
+        if not cards:
+            cards = [ft.Text("—", size=11, color=ft.Colors.GREY)]
+        return ft.Container(
+            content=ft.Column(
+                [
+                    ft.Row(
+                        [
+                            ft.Container(ft.Text(status, size=11, weight=ft.FontWeight.BOLD), bgcolor=cor, border_radius=6, padding=ft.Padding(4, 8, 4, 8)),
+                            ft.Container(expand=True),
+                            ft.Text(str(len(itens)), size=11, color=ft.Colors.GREY),
+                        ],
+                        spacing=6,
+                    ),
+                    ft.Column(cards, spacing=6, scroll=ft.ScrollMode.AUTO, expand=True),
+                ],
+                spacing=8,
+                expand=True,
+            ),
+            width=largura,
+            bgcolor=ft.Colors.SURFACE_CONTAINER_LOW,
+            border_radius=12,
+            padding=8,
+            border=ft.Border.all(1, ft.Colors.OUTLINE_VARIANT),
+        )
+
+    def _card_kanban(self, issue: dict) -> ft.Container:
+        versao = (issue.get("fixed_version") or {}).get("name", "") or "sem sprint"
+        done = issue.get("done_ratio", 0)
+        return ft.Container(
+            content=ft.Column(
+                [
+                    ft.Text(f"#{issue.get('id')}", size=10, weight=ft.FontWeight.BOLD, color=COR_PRINCIPAL),
+                    ft.Text(issue.get("subject", ""), size=12, max_lines=2, overflow=ft.TextOverflow.ELLIPSIS),
+                    ft.Row(
+                        [
+                            ft.Text(versao, size=10, color=ft.Colors.GREY, expand=True, max_lines=1, overflow=ft.TextOverflow.ELLIPSIS),
+                            ft.Text(f"{done}%", size=10, color=ft.Colors.GREY),
+                        ],
+                        spacing=4,
+                    ),
+                    ft.Row(
+                        [
+                            ft.IconButton(icon=ft.Icons.TIMER, icon_size=16, tooltip="Lançar horas", on_click=lambda e, i=issue: self._abrir_lancamento(i)),
+                            ft.IconButton(icon=ft.Icons.SMART_TOY, icon_size=16, tooltip="Análise da atividade (IA)", on_click=lambda e, i=issue: self._abrir_revisao(i)),
+                            ft.IconButton(icon=ft.Icons.SWAP_HORIZ, icon_size=16, tooltip="Mover para outro status", on_click=lambda e, i=issue: self._abrir_mover_status(i)),
+                        ],
+                        alignment=ft.MainAxisAlignment.CENTER,
+                        spacing=2,
+                    ),
+                ],
+                spacing=4,
+            ),
+            bgcolor=ft.Colors.SURFACE_CONTAINER_HIGHEST,
+            border_radius=12,
+            padding=8,
+            border=ft.Border.all(1, ft.Colors.OUTLINE_VARIANT),
+        )
 
     def _render_lista(self):
         self.lista.controls.clear()
@@ -488,6 +967,19 @@ class App:
         )
 
     # ============================================================ lançamento
+    def _status_disponiveis(self):
+        """Lista dos status do Redmine (dinâmico via API, com fallback fixo)."""
+        if getattr(self, "_status_disp", None) is not None:
+            return self._status_disp
+        lista = list(STATUS_VALIDOS)
+        if self.api is not None:
+            try:
+                lista = self.api.get_todos_status() or lista
+            except Exception:
+                pass
+        self._status_disp = lista
+        return lista
+
     def _abrir_lancamento(self, issue: dict):
         self.issue_selecionada = issue
         versoes = self.api.get_versions((issue.get("project") or {}).get("id")) if self.api else []
@@ -496,9 +988,15 @@ class App:
         status = (issue.get("status") or {}).get("name", "")
         done = issue.get("done_ratio", 0)
 
-        self.cmb_status = ft.Dropdown(label="Status", options=[ft.DropdownOption(key=s, text=s) for s in STATUS_VALIDOS], value=status if status in STATUS_VALIDOS else None)
-        self.slider_done = ft.Slider(min=0, max=100, divisions=10, value=done, label="{value}%", on_change=self._set_lbl_done)
+        statuses = self._status_disponiveis()
+        self.cmb_status = ft.Dropdown(label="Status", options=[ft.DropdownOption(key=s, text=s) for s in statuses], value=status if status in statuses else None)
+        self.pct_permitido = bool(self.config.get("atualizar_percentual", False))
+        self.slider_done = ft.Slider(min=0, max=100, divisions=10, value=done, label="{value}%", on_change=self._set_lbl_done) if self.pct_permitido else None
         self.lbl_done = ft.Text(f"{int(done)}%")
+        self.pct_info = ft.Text(
+            "Atualização do % concluído desativada (regras do servidor). Para alterar, habilite em Configurações.",
+            size=10, color=ft.Colors.GREY,
+        )
         self.txt_horas = ft.TextField(label="Horas hoje", keyboard_type=ft.KeyboardType.NUMBER, hint_text="ex: 1.5", prefix_icon=ft.Icons.TIMER)
         self.txt_data = ft.TextField(label="Data (AAAA-MM-DD)", value=self.hoje)
         self.cmb_atividade = self._dropdown_atividades()
@@ -518,8 +1016,7 @@ class App:
                     ft.Text(issue.get("subject", ""), size=12, max_lines=2, overflow=ft.TextOverflow.ELLIPSIS),
                     ft.Divider(height=4),
                     ft.Row([self.cmb_status, self.txt_horas], spacing=8),
-                    self.slider_done,
-                    self.lbl_done,
+                    *( [self.slider_done, self.lbl_done] if self.pct_permitido else [self.pct_info] ),
                     self.txt_comentario,
                     self.txt_data,
                     self.cmb_atividade,
@@ -579,12 +1076,13 @@ class App:
                 self.txt_horas.value = str(float(horas))
         except (TypeError, ValueError):
             pass
-        pct = s.get("percentual")
-        if isinstance(pct, (int, float)) and 0 <= float(pct) <= 100:
-            self.slider_done.value = float(pct)
-            self.lbl_done.value = f"{int(pct)}%"
+        if self.pct_permitido and self.slider_done is not None:
+            pct = s.get("percentual")
+            if isinstance(pct, (int, float)) and 0 <= float(pct) <= 100:
+                self.slider_done.value = float(pct)
+                self.lbl_done.value = f"{int(pct)}%"
         status = s.get("status")
-        if status and status in STATUS_VALIDOS:
+        if status and status in self._status_disponiveis():
             self.cmb_status.value = status
         if s.get("previsao"):
             self.txt_previsao.value = str(s["previsao"])
@@ -614,7 +1112,7 @@ class App:
             sheet.open = False
         self.page.update()
         novo_status = self.cmb_status.value
-        novo_done = int(self.slider_done.value)
+        novo_done = int(self.slider_done.value) if (self.pct_permitido and self.slider_done is not None) else None
         comentario = self.txt_comentario.value.strip()
         data_ap = self.txt_data.value.strip() or self.hoje
         previsao = self.txt_previsao.value.strip() or None
@@ -623,6 +1121,7 @@ class App:
 
         try:
             payload = {}
+            status_mudou = False
             status_ids = self.api.get_status_ids()
             if novo_status:
                 if novo_status not in status_ids:
@@ -630,7 +1129,10 @@ class App:
                 atual = (issue.get("status") or {}).get("name")
                 if novo_status != atual:
                     payload["status_id"] = status_ids[novo_status]
-            payload["done_ratio"] = novo_done
+                    status_mudou = True
+            # % concluído: só envia se permitido nas Configurações E junto com mudança de status
+            if self.pct_permitido and novo_done is not None and status_mudou:
+                payload["done_ratio"] = novo_done
             if previsao:
                 payload["due_date"] = previsao
             if sprint_id:
@@ -638,8 +1140,9 @@ class App:
             if payload:
                 self.api.atualizar_issue(issue_id, **payload)
             self.api.lancar_horas(issue_id, horas, comentario, data_ap, activity_id=int(atividade_id) if atividade_id else None)
+            done_final = novo_done if (novo_done is not None and "done_ratio" in payload) else int(issue.get("done_ratio", 0))
             self._notificar(f"Lançado {horas}h em #{issue_id} ✓")
-            self._atualizar_dados_locais(issue_id, novo_done, novo_status, previsao, sprint_id)
+            self._atualizar_dados_locais(issue_id, done_final, novo_status, previsao, sprint_id)
         except Exception as ex:
             self._notificar(f"Erro ao lançar #{issue_id}: {ex}")
 
@@ -669,8 +1172,8 @@ class App:
         return ft.Container(
             ft.Row(
                 [
-                    ft.Icon(icone, size=15, color=ft.Colors.INDIGO),
-                    ft.Text(texto, size=12, weight=ft.FontWeight.W_500, color=ft.Colors.INDIGO),
+                    ft.Icon(icone, size=15, color=COR_PRINCIPAL),
+                    ft.Text(texto, size=12, weight=ft.FontWeight.W_500, color=COR_PRINCIPAL),
                 ],
                 spacing=5,
             ),
@@ -728,7 +1231,7 @@ class App:
                 [
                     ft.Icon(ft.Icons.SMART_TOY, size=56, color=ft.Colors.INDIGO_100),
                     ft.Text("Especialista em Projetos", size=17, weight=ft.FontWeight.BOLD, color=ft.Colors.ON_SURFACE),
-                    ft.Text("Ágil · Scrum · PMBOK", size=12, color=ft.Colors.INDIGO, weight=ft.FontWeight.W_500),
+                    ft.Text("Ágil · Scrum · PMBOK", size=12, color=ft.Colors.INDIGO_700, weight=ft.FontWeight.W_500),
                     ft.Text(
                         "Analisando a atividade automaticamente... você pode tocar em uma "
                         "sugestão ou digitar para aprofundar.",
@@ -758,7 +1261,7 @@ class App:
                     ft.IconButton(icon=ft.Icons.ARROW_BACK, tooltip="Voltar", on_click=self._fechar_revisao),
                     ft.Container(
                         ft.Icon(ft.Icons.SMART_TOY, color=ft.Colors.WHITE),
-                        bgcolor=ft.Colors.INDIGO,
+                        bgcolor=ft.Colors.INDIGO_700,
                         border_radius=12,
                         padding=ft.Padding(8, 8, 8, 8),
                     ),
@@ -984,23 +1487,94 @@ class App:
         self.btn_enviar.visible = bool(self.historico_chat)
         self.btn_iniciar.visible = not bool(self.historico_chat)
         self.page.update()
+        self.page.run_task(self._scroll_chat)
+
+    async def _scroll_chat(self):
         try:
-            import time
-            time.sleep(0.05)
-            self.chat_msgs.scroll_to(offset=-1, duration=200)
+            await asyncio.sleep(0.05)
+            await self.chat_msgs.scroll_to(offset=-1, duration=200)
         except Exception:
             pass
 
     # ============================================================ assistente (chat global)
     def _btn_limpar_historico(self) -> ft.IconButton:
-        return ft.IconButton(icon=ft.Icons.DELETE_SWEEP, tooltip="Limpar histórico do assistente", on_click=self._limpar_historico_assistente)
+        return ft.IconButton(icon=ft.Icons.DELETE_SWEEP, tooltip="Limpar histórico desta conversa", on_click=self._limpar_historico_assistente)
 
     def _limpar_historico_assistente(self, e=None):
+        if not self.conv_atual:
+            return
         self._esconder_digitando()
-        adb.limpar_historico("geral")
+        adb.limpar_historico(self.conv_atual)
         self.asst_historico = []
         self.asst_msgs.controls.clear()
         self._add_asst_msg("assistente", "Histórico limpo. Como posso ajudar com suas atividades hoje?")
+        self._render_conversas()
+        self.page.update()
+
+    # ------------------------------------------------------------ conversas (sidebar)
+    def _inicializar_conversa(self):
+        conversas = adb.listar_conversas()
+        self.conv_atual = conversas[0]["contexto"] if conversas else adb.criar_conversa()
+
+    def _render_conversas(self):
+        self.conversas_lista.controls.clear()
+        itens = []
+        for conv in adb.listar_conversas():
+            ativa = conv["contexto"] == self.conv_atual
+            caixa = ft.Container(
+                ft.Row(
+                    [
+                        ft.Icon(ft.Icons.CHAT if not ativa else ft.Icons.FORUM,
+                                size=16,
+                                color=COR_PRINCIPAL if ativa else ft.Colors.GREY),
+                        ft.Text(
+                            conv["titulo"] or "Nova conversa",
+                            size=12,
+                            weight=ft.FontWeight.BOLD if ativa else ft.FontWeight.NORMAL,
+                            color=ft.Colors.INDIGO_900 if ativa else ft.Colors.ON_SURFACE_VARIANT,
+                            max_lines=1,
+                            overflow=ft.TextOverflow.ELLIPSIS,
+                            expand=True,
+                        ),
+                        ft.IconButton(
+                            icon=ft.Icons.CLOSE,
+                            icon_size=14,
+                            icon_color=ft.Colors.GREY,
+                            tooltip="Excluir conversa",
+                            on_click=lambda e, c=conv["contexto"]: self._excluir_conversa(c),
+                        ),
+                    ],
+                    spacing=6,
+                ),
+                bgcolor=ft.Colors.PRIMARY_CONTAINER if ativa else ft.Colors.TRANSPARENT,
+                border_radius=10,
+                padding=ft.Padding(8, 4, 2, 4),
+                on_click=lambda e, c=conv["contexto"]: self._trocar_conversa(c),
+            )
+            itens.append(caixa)
+        self.conversas_lista.controls = itens
+        self.page.update()
+
+    def _nova_conversa(self, e=None):
+        contexto = adb.criar_conversa()
+        self._trocar_conversa(contexto)
+
+    def _trocar_conversa(self, contexto: str, e=None):
+        self._esconder_digitando()
+        self.conv_atual = contexto
+        self._carregar_historico_assistente()
+        self._render_conversas()
+        self.page.update()
+
+    def _excluir_conversa(self, contexto: str, e=None):
+        if contexto == self.conv_atual:
+            adb.excluir_conversa(contexto)
+            conversas = adb.listar_conversas()
+            self.conv_atual = conversas[0]["contexto"] if conversas else adb.criar_conversa()
+            self._carregar_historico_assistente()
+        else:
+            adb.excluir_conversa(contexto)
+        self._render_conversas()
         self.page.update()
 
     def _add_asst_msg(self, autor: str, texto: str):
@@ -1040,8 +1614,11 @@ class App:
                     spacing=4,
                 )
             )
+        self.page.run_task(self._scroll_msgs)
+
+    async def _scroll_msgs(self):
         try:
-            self.asst_msgs.scroll_to(offset=-1, duration=150)
+            await self.asst_msgs.scroll_to(offset=-1, duration=150)
         except Exception:
             pass
 
@@ -1053,7 +1630,7 @@ class App:
         self.asst_historico = []
         self.asst_msgs.controls.clear()
         try:
-            for m in adb.historico("geral"):
+            for m in adb.historico(self.conv_atual):
                 self._add_asst_msg("assistente" if m["autor"] == "assistente" else "você", m["conteudo"])
         except Exception:
             pass
@@ -1076,7 +1653,14 @@ class App:
                 ft.Text("Pergunte ao assistente para organizar suas prioridades.", size=11, color=ft.Colors.GREY)
             )
             return
-        ordenados = sorted(self.issues, key=lambda i: pr.get(i.get("id"), 9999))
+        # prioridade = ordem na lista salva (primeiro da lista = mais importante)
+        def _chave_prioridade(i):
+            info = pr.get(i.get("id"))
+            if isinstance(info, dict):
+                return info.get("prioridade", 9999)
+            return 9999
+
+        ordenados = sorted(self.issues, key=_chave_prioridade)
         for i in ordenados[:15]:
             pid = i.get("id")
             info = pr.get(pid, {})
@@ -1089,7 +1673,7 @@ class App:
                                 [
                                     ft.Container(
                                         ft.Text(f"#{pid}", size=10, weight=ft.FontWeight.BOLD, color=ft.Colors.WHITE),
-                                        bgcolor=ft.Colors.INDIGO,
+                                        bgcolor=ft.Colors.INDIGO_700,
                                         border_radius=6,
                                         padding=ft.Padding(6, 2, 6, 2),
                                     ),
@@ -1110,119 +1694,13 @@ class App:
             )
         self.page.update()
 
-    def _executar_acoes(self, acoes: list):
-        """Executa as ações solicitadas pelo assistente conforme as ferramentas habilitadas."""
-        habilitadas = set(self.config.get("ferramentas_habilitadas") or [])
-        # ferramentas locais não precisam de API
-        locais = {t["id"] for t in TOOLS if not t.get("requer_redmine")}
-        precisa_api = any(
-            isinstance(a, dict) and (a.get("acao") or a.get("tipo")) in habilitadas - locais
-            for a in acoes
-        )
-        if precisa_api and (self.api is None):
-            creds = {
-                "site": self.config.get("site"),
-                "api_key": self.config.get("api_key"),
-                "login": self.config.get("login"),
-                "senha": self.config.get("senha"),
-            }
-            if not (creds.get("site") and creds.get("api_key")):
-                return "Não configurado: informe URL e API key do Redmine na aba Configuração."
-            self.api = RedmineAPI(credenciais=creds)
-
-        avisos = []
-        for item in acoes:
-            if not isinstance(item, dict):
-                continue
-            acao = item.get("acao") or item.get("tipo")
-            if acao not in habilitadas:
-                avisos.append(f"⚠️ Ferramenta '{acao}' desabilitada — ação ignorada.")
-                continue
-            dados = item.get("dados") or {}
-            try:
-                msg = self._processar_acao(acao, dados)
-                if msg:
-                    avisos.append(msg)
-            except Exception as ex:
-                avisos.append(f"❌ Ação '{acao}' falhou: {ex}")
-        return "\n".join(avisos)
-
-    def _processar_acao(self, acao: str, dados: dict) -> str:
-        """Executa uma ação individual e retorna mensagem de resultado (ou '')."""
-        if acao in ("definir_prioridade", "salvar_nota"):
-            return self._acao_local(acao, dados)
-        return self._acao_redmine(acao, dados)
-
-    def _acao_local(self, acao: str, dados: dict) -> str:
-        if acao == "definir_prioridade":
-            ids = [int(x) for x in (dados.get("issue_ids") or []) if str(x).isdigit() or isinstance(x, int)]
-            nota = str(dados.get("nota") or "")
-            adb.definir_prioridade_ordem(ids, nota)
-            return f"✅ Prioridade definida para {len(ids)} atividades (ordem local)."
-        if acao == "salvar_nota":
-            issue_id = int(dados.get("issue_id"))
-            nota = str(dados.get("nota") or "")
-            adb.salvar_nota(issue_id, nota)
-            return f"✅ Anotação salva para #{issue_id} (local)."
-        return ""
-
-    def _acao_redmine(self, acao: str, dados: dict) -> str:
-        api = self.api
-        if acao == "lancar_horas":
-            issue_id = int(dados.get("issue_id"))
-            horas = float(dados.get("horas"))
-            comentario = str(dados.get("comentario") or "")
-            data = str(dados.get("data") or self.hoje)
-            if horas <= 0:
-                return f"⚠️ Horas inválidas (<=0) para #{issue_id}."
-            api.lancar_horas(issue_id, horas, comentario, data)
-            return f"✅ Lançadas {horas}h em #{issue_id} no Redmine."
-        if acao == "atualizar_status":
-            issue_id = int(dados.get("issue_id"))
-            status = str(dados.get("status") or "")
-            api.atualizar_status(issue_id, status)
-            return f"✅ Status #{issue_id} alterado para '{status}'."
-        if acao == "atualizar_percentual":
-            issue_id = int(dados.get("issue_id"))
-            pct = int(float(dados.get("percentual")))
-            pct = max(0, min(100, pct))
-            api.atualizar_issue(issue_id, done_ratio=pct)
-            return f"✅ % concluído de #{issue_id} definido para {pct}%."
-        if acao == "atualizar_previsao":
-            issue_id = int(dados.get("issue_id"))
-            data = str(dados.get("data") or "")
-            api.atualizar_issue(issue_id, due_date=data)
-            return f"✅ Data prevista de #{issue_id} alterada para {data}."
-        if acao == "atualizar_prioridade":
-            issue_id = int(dados.get("issue_id"))
-            prioridade = str(dados.get("prioridade") or "")
-            prioridades = api.get_issue_priorities()
-            prio_id = next((p["id"] for p in prioridades if p["name"].lower() == prioridade.lower()), None)
-            if prio_id is None:
-                raise ValueError(f"Prioridade '{prioridade}' não encontrada no Redmine.")
-            api.atualizar_issue(issue_id, priority_id=prio_id)
-            return f"✅ Prioridade #{issue_id} alterada para '{prioridade}'."
-        if acao == "adicionar_comentario":
-            issue_id = int(dados.get("issue_id"))
-            comentario = str(dados.get("comentario") or "")
-            api.adicionar_comentario(issue_id, comentario)
-            return f"✅ Comentário adicionado a #{issue_id}."
-        if acao == "listar_atividades":
-            termo = str(dados.get("termo") or "").lower()
-            status_filtro = str(dados.get("status") or "").lower()
-            prio_filtro = str(dados.get("prioridade") or "").lower()
-            lista = api.get_issues_ativas()
-            if termo:
-                lista = [i for i in lista if termo in str(i.get("id")) or termo in (i.get("subject") or "").lower()]
-            if status_filtro:
-                lista = [i for i in lista if status_filtro in (i.get("status") or {}).get("name", "").lower()]
-            if prio_filtro:
-                lista = [i for i in lista if prio_filtro in (i.get("priority") or {}).get("name", "").lower()]
-            if not lista:
-                return "📭 Nenhuma atividade encontrada com esses filtros."
-            linhas = [f"- #{i.get('id')} · {(i.get('status') or {}).get('name','')} · {i.get('subject')}" for i in lista[:20]]
-            return "📋 Atividades encontradas:\n" + "\n".join(linhas)
-        return f"⚠️ Ferramenta '{acao}' não implementada."
+    def _executar_acoes(self, acoes: list) -> str:
+        """Executa as ações do assistente via ExecutorDeAcoes (lógica em acoes.py)."""
+        executor = ExecutorDeAcoes(self.config, self.api, self.issues)
+        relatorio = executor.executar(acoes)
+        if executor.api is not None and self.api is None:
+            self.api = executor.api
+        return relatorio
 
     # ============================================================ indicador "digitando"
     def _mostrar_digitando(self):
@@ -1269,10 +1747,7 @@ class App:
         )
         self.asst_msgs.controls.append(self.asst_digitando_col)
         self.page.update()
-        try:
-            self.asst_msgs.scroll_to(offset=-1, duration=150)
-        except Exception:
-            pass
+        self.page.run_task(self._scroll_msgs)
 
         async def animar():
             while self.asst_digitando_ativo:
@@ -1283,7 +1758,7 @@ class App:
                             p.opacity = alvo
                     self.page.update()
                     try:
-                        self.asst_msgs.scroll_to(offset=-1, duration=100)
+                        await self.asst_msgs.scroll_to(offset=-1, duration=100)
                     except Exception:
                         pass
                     await asyncio.sleep(0.18)
@@ -1306,13 +1781,82 @@ class App:
             self.asst_digitando_col = None
             self.page.update()
 
+    def _resumir_acao(self, item: dict) -> str:
+        """Resumo legível de uma ação proposta pela IA (para o diálogo de confirmação)."""
+        acao = item.get("acao") or item.get("tipo") or "?"
+        dados = item.get("dados") or {}
+        issue_id = dados.get("issue_id")
+        if acao == "lancar_horas":
+            texto = f"Lançar {dados.get('horas')}h na #{issue_id}"
+            if dados.get("comentario"):
+                texto += f" — '{dados.get('comentario')}'"
+            return texto
+        if acao == "atualizar_status":
+            return f"Mudar status da #{issue_id} para '{dados.get('status')}'"
+        if acao == "atualizar_percentual":
+            return f"Definir % concluído da #{issue_id} para {dados.get('percentual')}%"
+        if acao == "atualizar_previsao":
+            return f"Alterar data prevista da #{issue_id} para {dados.get('data')}"
+        if acao == "atualizar_prioridade":
+            return f"Alterar prioridade da #{issue_id} para '{dados.get('prioridade')}'"
+        if acao == "adicionar_comentario":
+            return f"Adicionar comentário na #{issue_id}"
+        return f"Executar ação '{acao}'"
+
+    def _confirmar_acoes_ia(self, acoes: list) -> "asyncio.Future[bool]":
+        """Exibe um diálogo pedindo confirmação das ações da IA no Redmine.
+
+        Retorna um Future resolvido com True (Confirmar) ou False (Cancelar)
+        quando o usuário decidir. Não aplica nada por conta própria.
+        """
+        loop = asyncio.get_running_loop()
+        done: "asyncio.Future[bool]" = loop.create_future()
+        linhas = [self._resumir_acao(a) for a in acoes if isinstance(a, dict)]
+
+        def _fechar(confirmado: bool, ev=None):
+            if not done.done():
+                done.set_result(confirmado)
+            self.page.close(dialogo)
+
+        dialogo = ft.AlertDialog(
+            modal=True,
+            title=ft.Text("Confirmar ações no Redmine", size=16, weight=ft.FontWeight.BOLD),
+            content=ft.Container(
+                ft.Column(
+                    [
+                        ft.Text(
+                            "A IA deseja executar as alterações a seguir no Redmine. "
+                            "Revise antes de confirmar:",
+                            size=12,
+                        ),
+                        *[ft.Text(f"• {linha}", size=12) for linha in linhas],
+                    ],
+                    spacing=8,
+                    scroll=ft.ScrollMode.AUTO,
+                ),
+                width=340,
+            ),
+            actions=[
+                ft.TextButton("Cancelar", on_click=lambda e: _fechar(False)),
+                ft.FilledButton(
+                    "Confirmar e aplicar",
+                    bgcolor=ft.Colors.GREEN_600,
+                    color=ft.Colors.WHITE,
+                    on_click=lambda e: _fechar(True),
+                ),
+            ],
+            actions_alignment=ft.MainAxisAlignment.END,
+        )
+        self.page.show_dialog(dialogo)
+        return done
+
     async def _enviar_assistente(self, e=None):
         mensagem = self.asst_input.value.strip()
         if not mensagem:
             return
         self._add_asst_msg("você", mensagem)
         self.asst_historico.append({"role": "user", "content": mensagem})
-        adb.salvar_mensagem("você", mensagem)
+        adb.salvar_mensagem("você", mensagem, self.conv_atual)
         self.asst_input.value = ""
         self.asst_input.disabled = True
         self.asst_btn_enviar.disabled = True
@@ -1322,6 +1866,9 @@ class App:
         try:
             prioridades = adb.prioridades()
             notas = adb.notas()
+            ferramentas = list(self.config.get("ferramentas_habilitadas") or [])
+            if not self.config.get("atualizar_percentual", False):
+                ferramentas = [t for t in ferramentas if t != "atualizar_percentual"]
             resultado = await asyncio.to_thread(
                 self.ollama.chat_assistente,
                 mensagem,
@@ -1329,14 +1876,26 @@ class App:
                 prioridades,
                 notas,
                 self.asst_historico,
-                self.config.get("ferramentas_habilitadas"),
+                ferramentas,
             )
             resposta = resultado.get("resposta", "")
             acoes = resultado.get("acoes", [])
 
             linhas = [resposta]
             if acoes:
-                relatorio = await asyncio.to_thread(self._executar_acoes, acoes)
+                auto = bool(self.config.get("assistente_auto_executar", False))
+                confirma = [
+                    a for a in acoes
+                    if isinstance(a, dict) and requer_confirmacao(a.get("acao") or a.get("tipo"))
+                ]
+                diretas = [a for a in acoes if a not in confirma]
+                if confirma and not auto:
+                    ok = await self._confirmar_acoes_ia(confirma)
+                    if ok:
+                        diretas.extend(confirma)
+                    else:
+                        linhas.append("✋ Ações propostas pela IA foram descartadas — nenhuma alteração foi aplicada.")
+                relatorio = await asyncio.to_thread(self._executar_acoes, diretas)
                 if relatorio:
                     linhas.append(relatorio)
                     if "Lançadas" in relatorio or "Prioridade" in relatorio:
@@ -1346,8 +1905,9 @@ class App:
             self._esconder_digitando()
             self._add_asst_msg("assistente", texto_final)
             self.asst_historico.append({"role": "assistant", "content": texto_final})
-            adb.salvar_mensagem("assistente", texto_final)
+            adb.salvar_mensagem("assistente", texto_final, self.conv_atual)
             self._render_prioridades()
+            self._render_conversas()
             self.asst_lbl_status.value = ""
         except Exception as ex:
             self._esconder_digitando()
@@ -1438,7 +1998,7 @@ class App:
             site = self.txt_site.value.strip()
             api_key = self.txt_apikey.value.strip()
             if site and api_key:
-                api = RedmineAPI(credenciais={"site": site, "api_key": api_key, "login": self.txt_login.value, "senha": self.txt_senha.value})
+                api = RedmineAPI(credenciais={"site": site, "api_key": api_key})
                 usuario = await asyncio.to_thread(api.get_usuario_atual)
                 nome = f"{usuario.get('firstname','')} {usuario.get('lastname','')}".strip()
                 self.lbl_status_config.value = f"Redmine: {nome} ({usuario.get('login')}) ✓"
@@ -1478,20 +2038,178 @@ class App:
     def _salvar_config(self, e=None):
         self.config.update({
             "site": self.txt_site.value.strip(),
-            "login": self.txt_login.value.strip(),
-            "senha": self.txt_senha.value.strip(),
             "api_key": self.txt_apikey.value.strip(),
         })
         self.config.update(self._ler_config_llm())
         self.config["ferramentas_habilitadas"] = [
             t_id for t_id, chk in self._chk_ferramentas.items() if chk.value
         ]
+        self.config["debug"] = bool(self.chk_debug.value)
+        self.config["atualizar_percentual"] = bool(self.chk_atualizar_pct.value)
+        self.config["assistente_auto_executar"] = bool(self.chk_auto_executar.value)
+        self.config["kanban_colunas"] = [ed.to_dict() for ed in self._editores_colunas]
         salvar_config(self.config)
+        debug_log.habilitar(self.config.get("debug", False))
         self.ollama = self._construir_cliente_llm()
         self.api = None
+        self._status_disp = None
         self.lbl_status_config.value = "Configurações salvas. Clique em Atualizar na aba Atividades."
         self.lbl_status_config.color = ft.Colors.GREEN
         self.page.update()
+
+    # ============================================================ editor do quadro kanban
+    def _card_editor_coluna(self, ed: _EditorColuna) -> ft.Container:
+        indice = self._editores_colunas.index(ed)
+        return ft.Container(
+            content=ft.Column(
+                [
+                    ft.Row(
+                        [
+                            ed.txt_titulo,
+                            ft.IconButton(icon=ft.Icons.ARROW_UPWARD, icon_size=18, tooltip="Mover para cima", disabled=indice == 0, on_click=lambda e, i=indice: self._kb_mover(i, -1)),
+                            ft.IconButton(icon=ft.Icons.ARROW_DOWNWARD, icon_size=18, tooltip="Mover para baixo", disabled=indice == len(self._editores_colunas) - 1, on_click=lambda e, i=indice: self._kb_mover(i, 1)),
+                            ft.IconButton(icon=ft.Icons.DELETE_OUTLINE, icon_size=18, tooltip="Remover coluna", on_click=lambda e, i=indice: self._kb_remover(i)),
+                        ],
+                        vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                        spacing=2,
+                    ),
+                    ed.lbl_status,
+                    ed.wrap_status,
+                    ed.chk_concluida,
+                ],
+                spacing=6,
+            ),
+            padding=10,
+            border_radius=12,
+            border=ft.Border.all(1, ft.Colors.OUTLINE_VARIANT),
+            bgcolor=ft.Colors.SURFACE_CONTAINER_HIGHEST,
+        )
+
+    def _render_secao_kanban(self):
+        self.colunas_kanban_list.controls.clear()
+        for ed in self._editores_colunas:
+            self.colunas_kanban_list.controls.append(self._card_editor_coluna(ed))
+        self.page.update()
+
+    def _kb_adicionar(self, e=None):
+        self._editores_colunas.append(_EditorColuna("Nova coluna", [], False))
+        self._render_secao_kanban()
+        self._notificar("Coluna adicionada. Ajuste o nome e os status e salve.")
+
+    def _kb_mover(self, indice: int, delta: int):
+        novo = indice + delta
+        if 0 <= novo < len(self._editores_colunas):
+            self._editores_colunas[indice], self._editores_colunas[novo] = (
+                self._editores_colunas[novo], self._editores_colunas[indice],
+            )
+            self._render_secao_kanban()
+
+    def _kb_remover(self, indice: int):
+        del self._editores_colunas[indice]
+        if not self._editores_colunas:
+            self._editores_colunas.append(_EditorColuna("Nova", ["Nova"], False))
+        self._render_secao_kanban()
+
+    # ============================================================ mover status
+    def _abrir_mover_status(self, issue: dict):
+        self.issue_selecionada = issue
+        atual = (issue.get("status") or {}).get("name", "")
+        opcoes = [ft.DropdownOption(key=s, text=s) for s in self._status_disponiveis() if s != atual]
+        self.cmb_mover_status = ft.Dropdown(label="Novo status", options=opcoes, value=opcoes[0].key if opcoes else None)
+        self.txt_mover_comentario = ft.TextField(
+            label="Comentário (adicional como nota)",
+            hint_text="O que motivou essa mudança?",
+            multiline=True,
+            min_lines=2,
+            max_lines=4,
+        )
+        self.lbl_mover = ft.Text("", size=11, color=ft.Colors.GREY)
+
+        conteudo = ft.Container(
+            ft.Column(
+                [
+                    ft.Row([ft.Icon(ft.Icons.SWAP_HORIZ), ft.Text(f"Mover status · #{issue.get('id')}", weight=ft.FontWeight.BOLD, size=15)]),
+                    ft.Text(issue.get("subject", ""), size=12, max_lines=2, overflow=ft.TextOverflow.ELLIPSIS),
+                    ft.Text(f"Status atual: {atual}", size=11, color=ft.Colors.GREY),
+                    ft.Divider(height=4),
+                    self.cmb_mover_status,
+                    self.txt_mover_comentario,
+                    ft.Text("Esta movimentação lança 1 minuto como tempo de atividade na issue.", size=11, color=ft.Colors.GREY),
+                    self.lbl_mover,
+                    ft.Row(
+                        [
+                            ft.OutlinedButton("Cancelar", icon=ft.Icons.CLOSE, on_click=self._fechar_sheet),
+                            ft.Container(expand=True),
+                            ft.FilledButton("Confirmar", icon=ft.Icons.CHECK, on_click=lambda e: self.page.run_task(self._mover_status_async)),
+                        ],
+                        spacing=8,
+                    ),
+                ],
+                spacing=10,
+            ),
+            padding=16,
+        )
+
+        bs = ft.BottomSheet(content=conteudo, show_drag_handle=True, open=True, on_dismiss=self._fechar_sheet)
+        self.page.overlay.append(bs)
+        self.page.update()
+
+    async def _mover_status_async(self, e=None):
+        issue = self.issue_selecionada
+        if not issue:
+            return
+        novo_status = self.cmb_mover_status.value
+        if not novo_status:
+            self.lbl_mover.value = "Selecione um status."
+            self.lbl_mover.color = ft.Colors.RED
+            self.page.update()
+            return
+        comentario = self.txt_mover_comentario.value.strip()
+        sheet = self._sheet_aberta()
+        if sheet:
+            sheet.open = False
+        self.page.update()
+        try:
+            await asyncio.to_thread(self._executar_mover_status, issue, novo_status, comentario)
+            self._atualizar_status_local(issue["id"], novo_status)
+            self._notificar(f"#{issue['id']} movida para '{novo_status}' ✓ (+1 min apontado)")
+        except Exception as ex:
+            self._notificar(f"Erro ao mover #{issue['id']}: {ex}")
+
+    def _executar_mover_status(self, issue: dict, novo_status: str, comentario: str):
+        issue_id = issue["id"]
+        status_ids = self.api.get_status_ids()
+        status_id = status_ids.get(novo_status)
+        if status_id is None:
+            raise ValueError(f"Status '{novo_status}' não encontrado no Redmine.")
+        payload = {"status_id": status_id}
+        if comentario:
+            payload["notes"] = comentario
+        self.api.atualizar_issue(issue_id, **payload)
+        self.api.lancar_horas(
+            issue_id,
+            1 / 60.0,
+            "Movimentação de status",
+            self.hoje,
+            activity_id=self._atividade_padrao_mover(),
+        )
+
+    def _atividade_padrao_mover(self):
+        try:
+            ativs = self.api.get_time_entry_activities()
+        except Exception:
+            return 9
+        for a in ativs:
+            if str(a.get("id")) == "9":
+                return 9
+        return ativs[0]["id"] if ativs else 9
+
+    def _atualizar_status_local(self, issue_id: int, novo_status: str):
+        for issue in self.issues:
+            if issue.get("id") == issue_id:
+                issue["status"] = {"name": novo_status}
+                break
+        self._filtrar()
 
     # ============================================================ auxiliares
     def _notificar(self, texto: str):
