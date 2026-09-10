@@ -23,6 +23,8 @@ from logger_app import get_logger
 from config_manager import carregar_config
 from redmine_api import criar_api_da_config, normalizar_data
 
+LOGGER = get_logger("atualizar_redmine")
+
 BASE_DIR = Path(__file__).resolve().parent
 ARQUIVO_PLANILHA = BASE_DIR / "atividades_ativas.xlsx"
 
@@ -84,6 +86,7 @@ def main(aplicar: bool, planilha: Path = ARQUIVO_PLANILHA):
         try:
             issue = api.get_issue(issue_id)
         except Exception:
+            LOGGER.exception("Falha ao buscar issue #%s — linha ignorada", issue_id)
             continue
 
         status_atual = (issue.get("status") or {}).get("name")

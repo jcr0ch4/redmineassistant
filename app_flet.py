@@ -24,8 +24,11 @@ import debug_log
 from acoes import ExecutorDeAcoes
 from config_manager import DEFAULT_KANBAN_COLUNAS, carregar_config, salvar_config
 from ferramentas import TOOLS, TOOLS_POR_ID, categorias, ferramentas_por_categoria, requer_confirmacao
+from logger_app import get_logger
 from ollama_client import PROVIDERS, OllamaClient
 from redmine_api import STATUS_ATIVOS, RedmineAPI, criar_api
+
+LOGGER = get_logger("app")
 
 STATUS_VALIDOS = ["Nova", "Backlog", "Especificação", "Em andamento", "Validação", "Encerrada", "Cancelada", "Suspensa"]
 ITENS_POR_PAGINA = 6
@@ -664,7 +667,7 @@ class App:
         try:
             salvar_config(self.config)
         except Exception:
-            pass
+            LOGGER.exception("Falha ao persistir configuração")
 
     def _trocar_visualizacao(self, e=None):
         kanban = "kanban" in (self.seg_visualizacao.selected or [])
@@ -714,6 +717,7 @@ class App:
             try:
                 versoes.extend(self.api.get_versions(pid))
             except Exception:
+                LOGGER.exception("Falha ao listar versões do projeto %s", pid)
                 continue
 
         hoje = str(self.hoje)
@@ -976,7 +980,7 @@ class App:
             try:
                 lista = self.api.get_todos_status() or lista
             except Exception:
-                pass
+                LOGGER.exception("Falha ao obter status dinâmicos — usando lista fixa de fallback")
         self._status_disp = lista
         return lista
 
@@ -1052,6 +1056,7 @@ class App:
             ops = [ft.DropdownOption(key=str(a["id"]), text=a["name"]) for a in ativs]
             value = str(9) if any(str(a["id"]) == "9" for a in ativs) else None
         except Exception:
+            LOGGER.exception("Falha ao listar atividades de apontamento — usando fallback fixo")
             ops = [ft.DropdownOption(key="9", text="Desenvolvimento")]
             value = "9"
         return ft.Dropdown(label="Atividade apontamento", options=ops, value=value)
@@ -1633,7 +1638,7 @@ class App:
             for m in adb.historico(self.conv_atual):
                 self._add_asst_msg("assistente" if m["autor"] == "assistente" else "você", m["conteudo"])
         except Exception:
-            pass
+            LOGGER.exception("Falha ao carregar histórico de conversa %s", self.conv_atual)
         if not self.asst_msgs.controls:
             self._add_asst_msg(
                 "assistente",
@@ -2198,6 +2203,7 @@ class App:
         try:
             ativs = self.api.get_time_entry_activities()
         except Exception:
+            LOGGER.exception("Falha ao listar atividades de apontamento — usando fallback fixo")
             return 9
         for a in ativs:
             if str(a.get("id")) == "9":
