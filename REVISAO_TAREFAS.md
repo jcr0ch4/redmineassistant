@@ -10,7 +10,30 @@
 
 ---
 
-## P0-1 — Adicionar `.gitignore` e proteger arquivos sensíveis
+## Status de execução (concluídos)
+
+> Todos os itens abaixo foram implementados e estão no histórico `main`.
+> **Decisão (P0-1):** o histórico do git **não** foi reescrito — o blob de 64MB
+> (`dist/RedmineAssitant.exe`) permanece nos commits antigos, conforme decisão explícita
+> do usuário.
+
+| Item | Status | Referência |
+|---|---|---|
+| P0-1 — `.gitignore` e proteção de arquivos sensíveis | ✅ Concluído | commit `85fa1d7` |
+| P0-2 — Confirmação obrigatória antes de ações da IA no Redmine | ✅ Concluído (pré-existente) | `ferramentas.py`/`app_flet.py` |
+| P0-3 — `activity_id` dinâmico no lançamento de horas | ✅ Concluído (pré-existente) | `redmine_api.py` |
+| P1-1 — Vocabulário único de status | ✅ Concluído | commit `a4d2190` (scripts); app pré-existente |
+| P1-2 — Validação de datas (`normalizar_data`) | ✅ Concluído | commit `a850b45` (script); `acoes.py`/`redmine_api.py` |
+| P1-3 — Deduplicação de `_criar_api` | ✅ Concluído | commit `72823b8` |
+| P1-4 — Cobertura mínima de testes + CI | ✅ Concluído | commit `1113a71` (`tests/`, `.github/`) |
+| P1-5 — Extração de `acoes.py` | ✅ Concluído (pré-existente) | `acoes.py` |
+| P2-1 — Remoção de `RedmineAPI.atividade_id` | ✅ Concluído (pré-existente) | `redmine_api.py` |
+| P2-2 — Remoção de `paramiko` órfão | ✅ Concluído | commit `67c4a5b` |
+| P2-3 — Logging de erros silenciosos | ✅ Concluído | commit `6718754` (`logger_app.py` + usos) |
+
+---
+
+## ✅ P0-1 — Adicionar `.gitignore` e proteger arquivos sensíveis
 
 **Problema:** o repositório não tem `.gitignore`. Os arquivos `config.json`,
 `credenciais.txt`, `assistente_local.db`, `atividades_ativas.xlsx`, `.venv/`, `dist/`,
@@ -59,7 +82,7 @@ histórico foi explicitamente perguntada ao usuário (não assumida).
 
 ---
 
-## P0-2 — Confirmação obrigatória antes de executar ações da IA no Redmine
+## ✅ P0-2 — Confirmação obrigatória antes de executar ações da IA no Redmine
 
 **Problema:** em `app_flet.py`, a função `_enviar_assistente` (linhas ~1309-1348) recebe
 o resultado de `ollama.chat_assistente(...)` e, se houver `acoes`, chama
@@ -112,7 +135,7 @@ explicitamente a opção de execução automática nas configurações. Ações 
 
 ---
 
-## P0-3 — Corrigir fallback hardcoded de `activity_id` no lançamento de horas
+## ✅ P0-3 — Corrigir fallback hardcoded de `activity_id` no lançamento de horas
 
 **Problema:** em `redmine_api.py`, `lancar_horas` (linha ~216) usa
 `activity_id = 9  # fallback: Desenvolvimento (ajustar conforme projeto)` quando
@@ -154,7 +177,7 @@ atividade certa.
 
 ---
 
-## P1-1 — Unificar o vocabulário de status entre `app_flet.py` e `atualizar_redmine.py`
+## ✅ P1-1 — Unificar o vocabulário de status entre `app_flet.py` e `atualizar_redmine.py`
 
 **Problema:** `app_flet.py` (linha 27) define
 `STATUS_VALIDOS = ["Nova", "Backlog", "Especificação", "Em andamento", "Validação", "Encerrada", "Cancelada", "Suspensa"]`
@@ -194,7 +217,7 @@ UI dizendo "apenas 4 status podem ser atualizados via planilha").
 
 ---
 
-## P1-2 — Adicionar validação de data nas ações de IA (`atualizar_previsao`)
+## ✅ P1-2 — Adicionar validação de data nas ações de IA (`atualizar_previsao`)
 
 **Problema:** a ação `atualizar_previsao` em `app_flet.py` (`_acao_redmine`, ~linha
 1191-1195) envia `dados.get("data")` direto para `api.atualizar_issue(issue_id,
@@ -226,7 +249,7 @@ exceção genérica de HTTP.
 
 ---
 
-## P1-3 — Eliminar duplicação de `_criar_api()`
+## ✅ P1-3 — Eliminar duplicação de `_criar_api()`
 
 **Problema:** `download_atividades.py` (linha ~49) e `atualizar_redmine.py` (linha
 ~94) têm a função `_criar_api()` copiada palavra por palavra (lê `config.json` via
@@ -261,7 +284,7 @@ autenticação permanece idêntico ao atual (testado rodando `download_atividade
 
 ---
 
-## P1-4 — Cobertura mínima de testes automatizados
+## ✅ P1-4 — Cobertura mínima de testes automatizados
 
 **Problema:** o repositório não tem nenhum teste (`find . -iname "*test*"` não retorna
 nada) nem CI. Para uma ferramenta que grava dados em produção no Redmine (horas,
@@ -302,7 +325,7 @@ P1-1, P1-2 e P1-3.
 
 ---
 
-## P1-5 — Extrair a camada de ações do assistente para fora de `app_flet.py`
+## ✅ P1-5 — Extrair a camada de ações do assistente para fora de `app_flet.py`
 
 **Problema:** `app_flet.py` é uma única classe `App` com 1537 linhas, misturando
 construção de UI (Flet), estado de navegação e lógica de negócio (execução de ações no
@@ -330,7 +353,7 @@ sem inicializar uma `ft.Page`.
 
 ---
 
-## P2-1 — Remover método morto `RedmineAPI.atividade_id`
+## ✅ P2-1 — Remover método morto `RedmineAPI.atividade_id`
 
 **Problema:** `redmine_api.py` (linha 226-227) define
 `def atividade_id(self, issue: dict) -> int: return issue["id"]`, que não é chamado em
@@ -352,7 +375,7 @@ passando; nenhuma referência quebrada.
 
 ---
 
-## P2-2 — Esclarecer/remover dependência órfã `paramiko` em `requirements-dev.txt`
+## ✅ P2-2 — Esclarecer/remover dependência órfã `paramiko` em `requirements-dev.txt`
 
 **Problema:** `requirements-dev.txt` lista `paramiko==5.0.0` com o comentário
 `# Instalação de tema no servidor (script tarefa_64402/instalar_tema.py)`, mas esse
@@ -380,7 +403,7 @@ documentada ou o item foi removido.
 
 ---
 
-## P2-3 — Padronizar tratamento de exceções amplas com logging
+## ✅ P2-3 — Padronizar tratamento de exceções amplas com logging
 
 **Problema:** vários pontos usam `except Exception:` (por exemplo,
 `atualizar_redmine.py` linha ~122, ao buscar cada issue: `except Exception: continue`)
@@ -413,18 +436,21 @@ fluxo principal continua normalmente para o usuário.
 
 ## Ordem de execução recomendada
 
-1. P0-1 (`.gitignore`) — trivial, zero risco, faça primeiro.
+> **Situação atual: todos os itens concluídos** — a ordem abaixo foi usada para
+> executar e rever cada item isoladamente (um commit por item em `main`).
+
+1. P0-1 (`.gitignore`) — trivial, zero risco, faça primeiro. ✅
 2. P0-3 (`activity_id`) — corretude de dados, isolado, baixo risco de quebrar outras
-   partes.
+   partes. ✅
 3. P0-2 (confirmação de ações da IA) — maior mudança de comportamento, mexe na UI;
-   fazer depois de P0-3 porque reaproveita o mesmo caminho de execução de ações.
+   fazer depois de P0-3 porque reaproveita o mesmo caminho de execução de ações. ✅
 4. P1-3 (deduplicar `_criar_api`) e P1-1 (vocabulário de status) — pequenas refatorações
-   que preparam o terreno para P1-4 (testes).
+   que preparam o terreno para P1-4 (testes). ✅
 5. P1-2 (validação de data) — depende de P1-3 se `normalizar_data` for movida para
-   `redmine_api.py` como sugerido.
+   `redmine_api.py` como sugerido. ✅
 6. P1-5 (extrair `acoes.py`) — antes ou junto de P1-4, já que testar a lógica de ações
-   fica mais fácil fora da classe `App`.
+   fica mais fácil fora da classe `App`. ✅
 7. P1-4 (testes) — depois das refatorações acima, para já testar a forma final do
-   código.
+   código. ✅
 8. P2-1, P2-2, P2-3 — podem ser feitos a qualquer momento, são independentes entre si e
-   de baixo risco.
+   de baixo risco. ✅

@@ -53,13 +53,15 @@ py -3 -m venv .venv
 ## 4. Sanidade antes do build
 
 ```powershell
-.venv\Scripts\python -m py_compile app_flet.py ollama_client.py config_manager.py `
-  ferramentas.py redmine_api.py assistente_db.py paths.py
+.venv\Scripts\python -m py_compile app_flet.py acoes.py ollama_client.py config_manager.py `
+  ferramentas.py redmine_api.py assistente_db.py logger_app.py paths.py debug_log.py `
+  download_atividades.py atualizar_redmine.py
+.venv\Scripts\python -m pytest -q   # (opcional) suíte offline de testes
 .venv\Scripts\flet run app_flet.py
 ```
 
 Confirme que o app abre e que a aba **Configuração** funciona (dropdown de
-provedor, checkboxes de ferramentas).
+provedor, checkboxes de ferramentas, opção de confirmação de ações).
 
 ## 5. Compilar o executável
 

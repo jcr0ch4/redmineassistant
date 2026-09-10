@@ -35,6 +35,12 @@ py -3 -m venv .venv
 > Requisito: Python 3.10+ (testado com 3.12). O `.venv` não é versionado
 > (ver `.gitignore`).
 
+> **Desenvolvimento/testes**: instale também `requirements-dev.txt` (inclui `pytest`):
+>
+> ```bash
+> ./.venv/bin/pip install -r requirements-dev.txt   # pytest; pyinstaller só p/ build Windows
+> ```
+
 ---
 
 ## 2. Rodar em desenvolvimento
@@ -138,10 +144,26 @@ O `flet build linux` / `flet build windows` gera **pacotes instaláveis**
 ## 5. Tarefas de casa (saúde do código)
 
 ```bash
+# Rodar a suíte de testes (sem Redmine real / sem IA — usa dublês e monkeypatch)
+./.venv/bin/python -m pytest -q
+
 # Checa sintaxe de todos os módulos
-./.venv/bin/python -m py_compile app_flet.py ollama_client.py config_manager.py \
-  ferramentas.py redmine_api.py assistente_db.py
+./.venv/bin/python -m py_compile app_flet.py acoes.py ollama_client.py config_manager.py \
+  ferramentas.py redmine_api.py assistente_db.py logger_app.py paths.py debug_log.py \
+  download_atividades.py atualizar_redmine.py
 
 # Smoke test de imports e config
 ./.venv/bin/python -c "import app_flet, config_manager; print(config_manager.carregar_config().get('llm_provider'))"
+```
+
+### Testes automatizados (`tests/`)
+
+- Suíte **offline**: não acessa Redmine nem provedor de IA.
+- Cobre: `config_manager` (load/save com `tmp_path`), parse de credenciais,
+  `normalizar_data`, `get_activity_id_padrao`, SQLite local (`assistente_db`) e a
+  execução de ações (`acoes.py`).
+- CI: `.github/workflows/tests.yml` roda `pip install -r requirements.txt -r
+  requirements-dev.txt` + `pytest` em pushes/PRs.
+- `app_flet.py` (UI do Flet) não tem cobertura fim a fim por design — a lógica de
+  ações foi extraída para `acoes.py` justamente para permitir teste isolado.
 ```

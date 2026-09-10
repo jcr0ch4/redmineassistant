@@ -2,6 +2,7 @@
 .venv/
 __pycache__/
 *.py[cod]
+.pytest_cache/
 
 # Build (PyInstaller / flet)
 dist/

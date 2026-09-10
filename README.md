@@ -22,20 +22,31 @@ Assistente pessoal do Redmine integrado a uma IA local (Ollama). Interface respo
   ações a IA pode executar (lançar horas, alterar status, % concluído, data
   prevista, prioridade no Redmine, adicionar comentário, listar atividades e
   organização/notas locais). Só as habilitadas são oferecidas à IA.
+- **Confirmação de ações no Redmine**: ações que **gravam** dado no Redmine (horas,
+  status, prioridade, data, comentário) pedem confirmação do usuário antes de
+  aplicar, protegendo contra prompt injection em descrições de issues. A opção
+  "Executar ações da IA sem confirmação (avançado)" desliga essa etapa (a tela
+  de configuração avisa sobre o risco).
 - Tela de configuração para credenciais do Redmine e modelo/Ollama.
 - Geração e atualização de planilha de atividades (Excel) para apontamento em lote.
+- **Log de erros** (`app.log`, com rotação) — falhas silenciosas (ex.: issue
+  inexistente na planilha) ficam registradas com traceback para diagnóstico.
 - Interface com tema **Material 3 (estilo Android)**, funcional em **Windows e Linux**.
 
 ## Estrutura
 
 - `app_flet.py` — aplicação principal (UI Flet) com abas Atividades, Assistente e Configuração.
-- `redmine_api.py` — cliente da REST API do Redmine.
+- `acoes.py` — execução das ações do assistente (lógica pura, sem Flet; testável isoladamente).
+- `redmine_api.py` — cliente da REST API do Redmine (inclui helpers compartilhados
+  `criar_api_da_config` e `normalizar_data`).
 - `ollama_client.py` — cliente multi-provedor de LLM (Ollama, OpenAI, Claude, Gemini, Kimi) com chat, sugestões e assistente pessoal com ações.
 - `assistente_db.py` — armazenamento local SQLite (histórico de conversas, prioridades, notas).
 - `config_manager.py` — leitura/gravação de config.json.
 - `ferramentas.py` — catálogo de ferramentas do assistente (formatos de ação e habilitação).
+- `logger_app.py` — logging padronizado em `app.log` (rotação 1MB × 3).
 - `download_atividades.py` — gera planilha `atividades_ativas.xlsx`.
 - `atualizar_redmine.py` — aplica alterações da planilha no Redmine (simulação ou `--aplicar`).
+- `tests/` — testes automatizados (pytest; rodam sem Redmine/IA reais).
 - `flet-runtime/flet-windows.zip` — binário grande (≈40MB) mantido **intencionalmente** no
   controle de versão: é o seed do cache offline do cliente desktop do Flet usado pelo
   `compilar_windows.bat` (evita download via GitHub em redes com proxy que intercepta HTTPS).
@@ -123,9 +134,28 @@ Detalhes, opções e a alternativa `flet build` (installer/bundle) estão em
   habilitadas entram no prompt do assistente e podem ser executadas.
 - Para scripts standalone, preencha `credenciais.txt` (não commite esse arquivo).
 
+## Testes
+
+Os testes rodam **sem** um Redmine real e **sem** provedor de IA (dependências são
+isoladas com `monkeypatch`/dublês). Instale o `pytest` (em `requirements-dev.txt`) e:
+
+```bash
+./.venv/bin/pip install -r requirements-dev.txt   # inclui pytest
+./.venv/bin/python -m pytest -q
+```
+
+O CI (`.github/workflows/tests.yml`) executa `pytest` em pushes/PRs. Cobertura: leitura
+de config e credenciais, `normalizar_data`, `get_activity_id_padrao`, SQLite local e a
+execução de ações (`acoes.py`).
+
 ## Segurança
 
 - Não versione `credenciais.txt`, `config.json`, `assistente_local.db` nem `atividades_ativas.xlsx` —
-  todos estão protegidos no `.gitignore` da raiz (junto com `.venv/`, `dist/`, `build/` e logs).
+  todos estão protegidos no `.gitignore` da raiz (junto com `.venv/`, `dist/`, `build/`, `.pytest_cache/` e logs).
+- Ações da IA que **gravam** no Redmine exigem confirmação do usuário na interface antes
+  de aplicar (proteção contra prompt injection). Pode-se desligar essa etapa via opção
+  "avançado" na tela de Configuração.
+- Erros silenciosos (ex.: issue inexistente em `atualizar_redmine.py`) ficam registrados
+  em `app.log` ao lado do app (rotação de 1MB × 3) para diagnóstico sem console.
 - O arquivo `assistente_local.db` (SQLite) guarda histórico de conversas e prioridades localmente — não é enviado para a nuvem.
 - Recomendação: usar variáveis de ambiente ou cofre de credenciais em produção.

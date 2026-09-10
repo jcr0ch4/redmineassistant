@@ -53,6 +53,9 @@ RedmineAssitant-build-windows/
    4. gera o executável com `flet pack` (PyInstaller `--onefile --noconsole`);
    5. entrega em **`dist\RedmineAssitant.exe`**.
 
+   > No checkout de **desenvolvimento**, o venv também tem `pytest`:
+   > `.venv\Scripts\python -m pytest -q` (suíte offline, não precisa de Redmine/IA).
+
 ## Testando o executável
 
 ```bat
