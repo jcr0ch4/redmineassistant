@@ -1,0 +1,22 @@
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+
+# Build (PyInstaller / flet)
+dist/
+build/
+*.spec.bak
+
+# Dados locais do app (contêm credenciais/personalização)
+config.json
+credenciais*.txt
+assistente_local.db
+atividades_ativas.xlsx
+
+# Logs e arquivos temporários
+*.log
+erro*.txt
+
+# Flet
+.flet/

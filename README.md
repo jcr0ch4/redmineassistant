@@ -36,6 +36,10 @@ Assistente pessoal do Redmine integrado a uma IA local (Ollama). Interface respo
 - `ferramentas.py` — catálogo de ferramentas do assistente (formatos de ação e habilitação).
 - `download_atividades.py` — gera planilha `atividades_ativas.xlsx`.
 - `atualizar_redmine.py` — aplica alterações da planilha no Redmine (simulação ou `--aplicar`).
+- `flet-runtime/flet-windows.zip` — binário grande (≈40MB) mantido **intencionalmente** no
+  controle de versão: é o seed do cache offline do cliente desktop do Flet usado pelo
+  `compilar_windows.bat` (evita download via GitHub em redes com proxy que intercepta HTTPS).
+  Não é um artefato de build esquecido — não remover.
 - `credenciais.txt` — (não versionar) credenciais usadas pelos scripts standalone.
 - `DEVELOP.md` — guia de desenvolvimento e compilação (Windows e Linux).
 
@@ -121,6 +125,7 @@ Detalhes, opções e a alternativa `flet build` (installer/bundle) estão em
 
 ## Segurança
 
-- Não versione `credenciais.txt` nem `config.json` com credenciais reais.
+- Não versione `credenciais.txt`, `config.json`, `assistente_local.db` nem `atividades_ativas.xlsx` —
+  todos estão protegidos no `.gitignore` da raiz (junto com `.venv/`, `dist/`, `build/` e logs).
 - O arquivo `assistente_local.db` (SQLite) guarda histórico de conversas e prioridades localmente — não é enviado para a nuvem.
 - Recomendação: usar variáveis de ambiente ou cofre de credenciais em produção.
