@@ -442,6 +442,7 @@ class RedmineAPI:
                 "possível definir 'activity_id' automaticamente."
             )
         entry = {
+            "issue_id": issue_id,
             "hours": horas,
             "activity_id": activity_id,
             "spent_on": data,

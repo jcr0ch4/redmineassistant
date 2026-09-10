@@ -43,6 +43,28 @@ py -3 -m venv .venv
 
 ---
 
+## 1.1 Versionamento do app
+
+A versão tem **fonte única de verdade** em `versao.py` (`APP_VERSAO`) e é exibida:
+
+- na aba **Configuração** do app (rodapé "Sobre");
+- via linha de comando: `python app_flet.py --version`;
+- nos metadados do executável Windows (`version_info.txt` → propriedade "Detalhes"
+  do `.exe`, usada por `RedmineAssistant.spec` quando o build é via PyInstaller).
+
+**Para publicar uma nova versão**:
+
+1. Atualize `APP_VERSAO` em `versao.py` (ex.: `1.1.0`).
+2. Atualize `filevers`/`prodvers`/`FileVersion`/`ProductVersion` em
+   `version_info.txt` (manter as duas em sincronia).
+3. Registre a mudança no `CHANGELOG.md` (assim que criado) e no [`roadmap.md`](../roadmap.md).
+4. Crie a tag no repositório (`git tag v1.1.0`).
+
+> O build via `flet pack` usa o nome `RedmineAssitant` (sem acento); o nome de
+> produto exibido ao usuário é `APP_NOME` = "Redmine Assistant".
+
+---
+
 ## 2. Rodar em desenvolvimento
 
 Sempre com o venv ativado (ou usando o caminho direto do binário).

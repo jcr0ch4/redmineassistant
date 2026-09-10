@@ -2,6 +2,10 @@
 
 Assistente pessoal do Redmine integrado a uma IA local (Ollama). Interface responsiva estilo mobile/Android feita com Flet.
 
+> **Versão atual**: consulte `versao.py` (`APP_VERSAO`). O número aparece na aba
+> **Configuração** (rodapé "Sobre") e via `python app_flet.py --version`.<br>
+> **Roadmap**: [`../roadmap.md`](../roadmap.md) lista as melhorias planejadas.
+
 ## Funcionalidades
 
 - Listar e filtrar suas atividades (issues) no Redmine (status ativos).
@@ -46,6 +50,9 @@ Assistente pessoal do Redmine integrado a uma IA local (Ollama). Interface respo
 - `logger_app.py` — logging padronizado em `app.log` (rotação 1MB × 3).
 - `download_atividades.py` — gera planilha `atividades_ativas.xlsx`.
 - `atualizar_redmine.py` — aplica alterações da planilha no Redmine (simulação ou `--aplicar`).
+- `paths.py` — caminhos persistentes (dev vs. executável compilado do PyInstaller).
+- `versao.py` — **fonte única da versão** do app (`APP_NOME`, `APP_VERSAO`); usada pela
+  UI, pelo `--version` e pelos metadados do executável Windows (`version_info.txt`).
 - `tests/` — testes automatizados (pytest; rodam sem Redmine/IA reais).
 - `flet-runtime/flet-windows.zip` — binário grande (≈40MB) mantido **intencionalmente** no
   controle de versão: é o seed do cache offline do cliente desktop do Flet usado pelo

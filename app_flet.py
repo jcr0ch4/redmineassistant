@@ -14,6 +14,7 @@ ou:
 
 import asyncio
 import platform
+import sys
 from collections import Counter
 from datetime import date
 
@@ -27,6 +28,7 @@ from ferramentas import TOOLS, TOOLS_POR_ID, categorias, ferramentas_por_categor
 from logger_app import get_logger
 from ollama_client import PROVIDERS, OllamaClient
 from redmine_api import STATUS_ATIVOS, RedmineAPI, criar_api
+from versao import APP_NOME, APP_VERSAO, APP_VERSAO_DISPLAY
 
 LOGGER = get_logger("app")
 
@@ -278,6 +280,7 @@ class App:
             max_lines=4,
             border_radius=18,
             prefix_icon=ft.Icons.SMART_TOY,
+            shift_enter=True,
             on_submit=lambda e: self.page.run_task(self._enviar_assistente),
         )
         self.asst_btn_enviar = ft.IconButton(
@@ -582,6 +585,14 @@ class App:
                             _secao("Depuração", [self.chk_debug]),
                             ft.Row([self.btn_testar, self.btn_salvar], spacing=10, wrap=True),
                             self.lbl_status_config,
+                            ft.Divider(height=6),
+                            ft.Text(
+                                APP_VERSAO_DISPLAY,
+                                size=11,
+                                italic=True,
+                                color=ft.Colors.GREY,
+                                text_align=ft.TextAlign.CENTER,
+                            ),
                         ],
                         spacing=12,
                     ),
@@ -683,7 +694,8 @@ class App:
     def _on_resize(self, e=None):
         seg = getattr(self, "seg_visualizacao", None)
         if seg and "kanban" in (seg.selected or []):
-            self._render_kanban()
+            largura = float(getattr(e, "width", 0)) if getattr(e, "width", None) else None
+            self._render_kanban(largura)
             self.page.update()
 
     async def _preparar_kanban(self):
@@ -812,20 +824,30 @@ class App:
             for s in (col.get("status") or [])
         }
 
-    def _render_kanban(self):
-        # Responsivo: se as colunas couberem na largura da janela, distribui o
-        # espaço igualmente (com teto de 320px); senão mantém largura fixa com
-        # rolagem horizontal. Recalculado também ao redimensionar a janela.
+    def _render_kanban(self, largura_livre: float | None = None):
+        # Responsivo: usa a largura do resize event (largura real do conteúdo,
+        # sem chrome da janela). As colunas são distribuídas descontando o
+        # espaçamento da Row e uma margem simétrica nos cantos, para que todas
+        # apareçam completas (a última nunca fica cortada). Se não couberem no
+        # mínimo, ativa rolagem horizontal.
+        MIN_COL = 210
+        MAX_COL = 520
+        ESPACO = 10
+        MARGEM = 4
         self.kanban_colunas.controls.clear()
         colunas = self._kanban_colunas_config()
         n_colunas = max(1, len(colunas))
-        largura_util = max(240, (self.page.window.width or 430) - 24)
-        base = 230
-        if n_colunas * base <= largura_util:
-            largura_col = min(largura_util / n_colunas, 320)
+        if largura_livre:
+            largura_util = largura_livre
+        else:
+            largura_util = self.page.width or self.page.window.width or 430
+        largura_util = max(220, largura_util - 24 - 2 * MARGEM)
+        espaco_total = (n_colunas - 1) * ESPACO
+        if n_colunas * MIN_COL + espaco_total <= largura_util:
+            largura_col = min((largura_util - espaco_total) / n_colunas, MAX_COL)
             self.kanban_colunas.scroll = ft.ScrollMode.HIDDEN
         else:
-            largura_col = base
+            largura_col = MIN_COL
             self.kanban_colunas.scroll = ft.ScrollMode.AUTO
         for col in colunas:
             statuses = set(col.get("status") or [])
@@ -1203,6 +1225,7 @@ class App:
             max_lines=4,
             border_radius=18,
             prefix_icon=ft.Icons.FORUM,
+            shift_enter=True,
             on_submit=lambda e: self.page.run_task(self._enviar_chat),
         )
         self.btn_iniciar = ft.FilledButton(
@@ -1821,7 +1844,8 @@ class App:
         def _fechar(confirmado: bool, ev=None):
             if not done.done():
                 done.set_result(confirmado)
-            self.page.close(dialogo)
+            dialogo.open = False
+            self.page.update()
 
         dialogo = ft.AlertDialog(
             modal=True,
@@ -2170,16 +2194,22 @@ class App:
             self.page.update()
             return
         comentario = self.txt_mover_comentario.value.strip()
+        self.lbl_mover.value = f"Movendo #{issue['id']} para '{novo_status}'..."
+        self.lbl_mover.color = ft.Colors.GREY
+        self.page.update()
+        try:
+            await asyncio.to_thread(self._executar_mover_status, issue, novo_status, comentario)
+        except Exception as ex:
+            self.lbl_mover.value = f"Erro ao mover #{issue['id']}: {ex}"
+            self.lbl_mover.color = ft.Colors.RED
+            self.page.update()
+            return
+        self._atualizar_status_local(issue["id"], novo_status)
         sheet = self._sheet_aberta()
         if sheet:
             sheet.open = False
         self.page.update()
-        try:
-            await asyncio.to_thread(self._executar_mover_status, issue, novo_status, comentario)
-            self._atualizar_status_local(issue["id"], novo_status)
-            self._notificar(f"#{issue['id']} movida para '{novo_status}' ✓ (+1 min apontado)")
-        except Exception as ex:
-            self._notificar(f"Erro ao mover #{issue['id']}: {ex}")
+        self._notificar(f"#{issue['id']} movida para '{novo_status}' ✓ (+1 min apontado)")
 
     def _executar_mover_status(self, issue: dict, novo_status: str, comentario: str):
         issue_id = issue["id"]
@@ -2211,10 +2241,21 @@ class App:
         return ativs[0]["id"] if ativs else 9
 
     def _atualizar_status_local(self, issue_id: int, novo_status: str):
-        for issue in self.issues:
-            if issue.get("id") == issue_id:
-                issue["status"] = {"name": novo_status}
-                break
+        card = next(
+            (i for i in self.issues_concluidas if i.get("id") == issue_id),
+            next((i for i in self.issues if i.get("id") == issue_id), None),
+        )
+        if card is None:
+            return
+        card["status"] = {"name": novo_status}
+        concluido = novo_status in self._statuses_colunas_concluida()
+        self.issues = [i for i in self.issues if i.get("id") != issue_id]
+        self.issues_concluidas = [i for i in self.issues_concluidas if i.get("id") != issue_id]
+        if concluido:
+            self.issues_concluidas.append(card)
+        else:
+            self.issues.append(card)
+        self.issues.sort(key=lambda i: i.get("id", 0), reverse=True)
         self._filtrar()
 
     # ============================================================ auxiliares
@@ -2258,4 +2299,7 @@ def main(page: ft.Page):
 
 
 if __name__ == "__main__":
+    if "--version" in sys.argv:
+        print(f"{APP_NOME} {APP_VERSAO}")
+        sys.exit(0)
     ft.run(main)
