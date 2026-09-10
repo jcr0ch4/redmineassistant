@@ -20,7 +20,8 @@ from pathlib import Path
 from openpyxl import load_workbook
 
 from logger_app import get_logger
-from redmine_api import RedmineAPI, criar_api_da_config, normalizar_data
+from config_manager import carregar_config
+from redmine_api import criar_api_da_config, normalizar_data
 
 BASE_DIR = Path(__file__).resolve().parent
 ARQUIVO_PLANILHA = BASE_DIR / "atividades_ativas.xlsx"
@@ -89,22 +90,8 @@ def _tratar_data(valor):
     return texto[:10]
 
 
-def _criar_api():
-    """Cria a API usando as credenciais de config.json (app) quando disponíveis,
-    caso contrário cai em credenciais.txt."""
-    cfg = carregar_config()
-    if cfg.get("site") and cfg.get("api_key"):
-        return RedmineAPI(credenciais={
-            "site": cfg["site"],
-            "api_key": cfg["api_key"],
-            "login": cfg.get("login"),
-            "senha": cfg.get("senha"),
-        })
-    return RedmineAPI()
-
-
 def main(aplicar: bool, planilha: Path = ARQUIVO_PLANILHA):
-    api = _criar_api()
+    api = criar_api_da_config()
     linhas = ler_planilha(planilha)
     # % concluído: só é enviado se habilitado nas Configurações do app
     permitir_pct = bool(carregar_config().get("atualizar_percentual", False))

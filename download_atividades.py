@@ -15,8 +15,7 @@ from openpyxl import Workbook
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 
-from redmine_api import STATUS_ATIVOS, RedmineAPI
-from config_manager import carregar_config
+from redmine_api import STATUS_ATIVOS, criar_api_da_config
 
 BASE_DIR = Path(__file__).resolve().parent
 ARQUIVO_SAIDA = BASE_DIR / "atividades_ativas.xlsx"
@@ -46,22 +45,8 @@ CORES_STATUS = {
 }
 
 
-def _criar_api():
-    """Cria a API usando as credenciais de config.json (app) quando disponíveis,
-    caso contrário cai em credenciais.txt."""
-    cfg = carregar_config()
-    if cfg.get("site") and cfg.get("api_key"):
-        return RedmineAPI(credenciais={
-            "site": cfg["site"],
-            "api_key": cfg["api_key"],
-            "login": cfg.get("login"),
-            "senha": cfg.get("senha"),
-        })
-    return RedmineAPI()
-
-
 def gerar_planilha(caminho: Path):
-    api = _criar_api()
+    api = criar_api_da_config()
     usuario = api.get_usuario_atual()
     issues = api.get_issues_ativas()
 
