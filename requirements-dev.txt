@@ -1,2 +1,4 @@
 # Dependências de build e operação (instalar após o requirements.txt)
 pyinstaller==6.22.2
+# Testes (CI e local): pytest tests/
+pytest==8.4.2
