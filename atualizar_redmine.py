@@ -35,8 +35,6 @@ COLUNA = {
     "Comentario": 13,
 }
 
-STATUS_VALIDOS = {"Nova", "Em andamento", "Backlog", "Especificação"}
-
 
 def ler_planilha(caminho: Path) -> list[dict]:
     caminho = Path(caminho)
@@ -92,6 +90,8 @@ def _tratar_data(valor):
 
 def main(aplicar: bool, planilha: Path = ARQUIVO_PLANILHA):
     api = criar_api_da_config()
+    status_ids = api.get_status_ids()
+    status_validos = set(status_ids)
     linhas = ler_planilha(planilha)
     # % concluído: só é enviado se habilitado nas Configurações do app
     permitir_pct = bool(carregar_config().get("atualizar_percentual", False))
@@ -119,8 +119,9 @@ def main(aplicar: bool, planilha: Path = ARQUIVO_PLANILHA):
         comentario = (item["comentario"] or "").strip()
 
         # --- validações ---
-        if novo_status and novo_status not in STATUS_VALIDOS:
-            print(f"  #{issue_id}: status inválido '{novo_status}' — ignorado (use Nova/Em andamento/Backlog/Especificação).")
+        if novo_status and novo_status not in status_validos:
+            lista_opcoes = ", ".join(sorted(status_validos)) or "nenhum"
+            print(f"  #{issue_id}: status inválido '{novo_status}' — ignorado (use um dos status do Redmine: {lista_opcoes}).")
             continue
         if novo_done is not None:
             try:

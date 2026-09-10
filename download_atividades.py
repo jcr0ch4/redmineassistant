@@ -15,7 +15,7 @@ from openpyxl import Workbook
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 
-from redmine_api import STATUS_ATIVOS, criar_api_da_config
+from redmine_api import criar_api_da_config
 
 BASE_DIR = Path(__file__).resolve().parent
 ARQUIVO_SAIDA = BASE_DIR / "atividades_ativas.xlsx"
@@ -111,15 +111,16 @@ def gerar_planilha(caminho: Path):
 
     ws2.cell(row=1, column=1, value="Status disponíveis no Redmine")
     ws2.cell(row=1, column=1).font = Font(bold=True)
-    for i, nome in enumerate(sorted(STATUS_ATIVOS)):
+    todos_status = api.get_todos_status()
+    for i, nome in enumerate(todos_status):
         ws2.cell(row=i + 2, column=1, value=nome)
 
     # Validação de lista para a coluna Status (D)
     if len(issues) > 0:
         from openpyxl.worksheet.datavalidation import DataValidation
-        lista_status = f"Config!$A$2:$A${len(STATUS_ATIVOS)+1}"
+        lista_status = f"Config!$A$2:$A${len(todos_status)+1}"
         dv = DataValidation(type="list", formula1=lista_status, allow_blank=True)
-        dv.error = "Escolha um status da lista (Nova, Em andamento, Backlog, Especificação)."
+        dv.error = "Escolha um status da lista disponível no Redmine."
         dv.errorTitle = "Status inválido"
         ws.add_data_validation(dv)
         dv.add(f"D2:D{len(issues)+1}")
