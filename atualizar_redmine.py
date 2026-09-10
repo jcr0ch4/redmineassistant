@@ -65,29 +65,6 @@ def _valor_celula(valor):
     return valor
 
 
-def _tratar_data(valor):
-    import datetime
-    if valor is None:
-        return None
-    if isinstance(valor, datetime.datetime):
-        return valor.date().isoformat()
-    if isinstance(valor, datetime.date):
-        return valor.isoformat()
-    texto = str(valor).strip()
-    if not texto:
-        return None
-    # Aceita formatos 2026-09-30, 30/09/2026, 30/09/26
-    m = re.fullmatch(r"(\d{4})-(\d{2})-(\d{2})", texto)
-    if m:
-        return texto
-    m2 = re.fullmatch(r"(\d{1,2})/(\d{1,2})/(\d{2,4})", texto)
-    if m2:
-        d, mo, a = m2.groups()
-        a = a if len(a) == 4 else f"20{a}"
-        return f"{a}-{int(mo):02d}-{int(d):02d}"
-    return texto[:10]
-
-
 def main(aplicar: bool, planilha: Path = ARQUIVO_PLANILHA):
     api = criar_api_da_config()
     status_ids = api.get_status_ids()
@@ -114,7 +91,7 @@ def main(aplicar: bool, planilha: Path = ARQUIVO_PLANILHA):
 
         novo_status = item["status"]
         novo_done = item["done_ratio"]
-        novo_due = _tratar_data(_valor_celula(item["due_date"]))
+        novo_due = normalizar_data(_valor_celula(item["due_date"]))
         horas = item["horas"]
         comentario = (item["comentario"] or "").strip()
 
